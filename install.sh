@@ -72,7 +72,7 @@ mount "$EFI_PART" /mnt/boot
 echo "Injecting CachyOS repositories into Live environment..."
 
 # Using lowercase -o forces curl to write to the exact filename specified
-if ! curl -f -L -o cachyos-repo.tar.xz https://cachyos.org; then
+if ! curl -f -L -o https://mirror.cachyos.org/cachyos-repo.tar.xz; then
     echo "ERROR: Failed to download the CachyOS repository archive."
     exit 1
 fi
