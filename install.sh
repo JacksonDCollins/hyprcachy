@@ -168,7 +168,7 @@ visudo -cf /etc/sudoers.d/10-installer
 
 # --- 7. SNAPPER SNAPSHOTTING ARRANGEMENT ---
 echo "Configuring Snapper filesystem mapping..."
-snapper -c root create-config /
+snapper --no-dbus -c root create-config /
 btrfs subvolume delete /.snapshots
 mkdir /.snapshots
 mount /.snapshots
@@ -196,7 +196,7 @@ grep '^HOOKS=' /etc/mkinitcpio.conf | grep -qw "$overlay_hook" || {
 
 limine-install
 limine-update
-snapper -c root create --description "Initial installation"
+snapper --no-dbus -c root create --description "Initial installation"
 limine-snapper-sync
 systemctl enable limine-snapper-sync.service
 EOF
