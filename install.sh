@@ -124,7 +124,7 @@ curl -fL https://mirror.cachyos.org/cachyos-repo.tar.xz \
 tar -xf "$INSTALL_WORKDIR/cachyos-repo.tar.xz" -C "$INSTALL_WORKDIR"
 (
     cd "$INSTALL_WORKDIR/cachyos-repo"
-    ./cachyos-repo.sh --quiet
+    ./cachyos-repo.sh --install
 )
 
 echo "Pacstrapping base packages with Btrfs, Snapper, and Limine utilities..."
