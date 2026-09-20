@@ -122,11 +122,11 @@ genfstab -U /mnt >> /mnt/etc/fstab
 # Run the official repository setup against the disk-backed target, never the live ISO.
 echo "Configuring CachyOS repositories in the target..."
 curl -fL https://mirror.cachyos.org/cachyos-repo.tar.xz \
-    -o /mnt/tmp/cachyos-repo.tar.xz
-tar -xf /mnt/tmp/cachyos-repo.tar.xz -C /mnt/tmp
+    -o /mnt/root/cachyos-repo.tar.xz
+tar -xf /mnt/root/cachyos-repo.tar.xz -C /mnt/root
 arch-chroot /mnt /usr/bin/bash -c \
-    'cd /tmp/cachyos-repo && ./cachyos-repo.sh --install' < <(yes)
-rm -rf /mnt/tmp/cachyos-repo /mnt/tmp/cachyos-repo.tar.xz
+    'cd /root/cachyos-repo && ./cachyos-repo.sh --install' < <(yes)
+rm -rf /mnt/root/cachyos-repo /mnt/root/cachyos-repo.tar.xz
 
 echo "Installing CachyOS kernel and boot integration into the target..."
 arch-chroot /mnt pacman --noconfirm -S --needed \
