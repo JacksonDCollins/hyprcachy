@@ -2,14 +2,10 @@
 set -euo pipefail
 
 MOUNTED_TARGET=0
-INSTALL_WORKDIR=""
 
 cleanup() {
     if (( MOUNTED_TARGET )); then
         umount -R /mnt 2>/dev/null || true
-    fi
-    if [[ -n "$INSTALL_WORKDIR" ]]; then
-        rm -rf "$INSTALL_WORKDIR"
     fi
 }
 trap cleanup EXIT
@@ -116,33 +112,25 @@ mount -o subvol=@pkg,$MOUNT_OPTS "$ROOT_PART" /mnt/var/cache/pacman/pkg
 mount -o subvol=@snapshots,$MOUNT_OPTS "$ROOT_PART" /mnt/.snapshots
 mount "$EFI_PART" /mnt/boot
 
-# --- 5. REPO INJECTION & PACSTRAP ---
-echo "Injecting CachyOS repositories into Live environment..."
-INSTALL_WORKDIR="$(mktemp -d)"
-curl -fL https://mirror.cachyos.org/cachyos-repo.tar.xz \
-    -o "$INSTALL_WORKDIR/cachyos-repo.tar.xz"
-tar -xf "$INSTALL_WORKDIR/cachyos-repo.tar.xz" -C "$INSTALL_WORKDIR"
-(
-    cd "$INSTALL_WORKDIR/cachyos-repo"
-    # Make package installation non-interactive, but skip upgrading the
-    # RAM-backed live system; pacstrap syncs repositories for the target.
-    grep -Eq '^[[:space:]]*pacman -Syu[[:space:]]*$' cachyos-repo.sh || \
-        die "Could not find the live-system upgrade in cachyos-repo.sh."
-    sed -i -E \
-        -e 's/^([[:space:]]*)pacman /\1pacman --noconfirm /' \
-        -e '/^[[:space:]]*pacman --noconfirm -Syu[[:space:]]*$/d' \
-        cachyos-repo.sh
-    ./cachyos-repo.sh --install
-)
-
-echo "Pacstrapping base packages with Btrfs, Snapper, and Limine utilities..."
-pacstrap -K /mnt base linux-cachyos linux-firmware \
-    cachyos-keyring cachyos-mirrorlist btrfs-progs snapper snap-pac limine \
-    limine-mkinitcpio-hook limine-snapper-sync networkmanager sudo efibootmgr
+# --- 5. TARGET BOOTSTRAP & CACHYOS REPOSITORIES ---
+echo "Pacstrapping the Arch base into the target..."
+pacstrap -K /mnt base linux-firmware btrfs-progs snapper snap-pac limine \
+    networkmanager sudo efibootmgr
 
 genfstab -U /mnt >> /mnt/etc/fstab
-cp /etc/pacman.conf /mnt/etc/pacman.conf
-cp -r /etc/pacman.d/cachyos* /mnt/etc/pacman.d/
+
+# Run the official repository setup against the disk-backed target, never the live ISO.
+echo "Configuring CachyOS repositories in the target..."
+curl -fL https://mirror.cachyos.org/cachyos-repo.tar.xz \
+    -o /mnt/tmp/cachyos-repo.tar.xz
+tar -xf /mnt/tmp/cachyos-repo.tar.xz -C /mnt/tmp
+arch-chroot /mnt /usr/bin/bash -c \
+    'cd /tmp/cachyos-repo && ./cachyos-repo.sh --install' < <(yes)
+rm -rf /mnt/tmp/cachyos-repo /mnt/tmp/cachyos-repo.tar.xz
+
+echo "Installing CachyOS kernel and boot integration into the target..."
+arch-chroot /mnt pacman --noconfirm -S --needed \
+    linux-cachyos limine-mkinitcpio-hook limine-snapper-sync
 
 ROOT_UUID="$(blkid -s UUID -o value "$ROOT_PART")"
 [[ -n "$ROOT_UUID" ]] || die "Could not determine the root filesystem UUID."
