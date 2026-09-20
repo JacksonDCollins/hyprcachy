@@ -124,9 +124,14 @@ curl -fL https://mirror.cachyos.org/cachyos-repo.tar.xz \
 tar -xf "$INSTALL_WORKDIR/cachyos-repo.tar.xz" -C "$INSTALL_WORKDIR"
 (
     cd "$INSTALL_WORKDIR/cachyos-repo"
-    # The upstream script does not expose a non-interactive flag, so add
-    # pacman's supported flag to its package operations before running it.
-    sed -i -E 's/^([[:space:]]*)pacman /\1pacman --noconfirm /' cachyos-repo.sh
+    # Make package installation non-interactive, but skip upgrading the
+    # RAM-backed live system; pacstrap syncs repositories for the target.
+    grep -Eq '^[[:space:]]*pacman -Syu[[:space:]]*$' cachyos-repo.sh || \
+        die "Could not find the live-system upgrade in cachyos-repo.sh."
+    sed -i -E \
+        -e 's/^([[:space:]]*)pacman /\1pacman --noconfirm /' \
+        -e '/^[[:space:]]*pacman --noconfirm -Syu[[:space:]]*$/d' \
+        cachyos-repo.sh
     ./cachyos-repo.sh --install
 )
 
