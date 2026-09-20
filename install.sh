@@ -70,7 +70,13 @@ mount "$EFI_PART" /mnt/boot
 
 # --- 5. REPO INJECTION & PACSTRAP ---
 echo "Injecting CachyOS repositories into Live environment..."
-curl -O https://cachyos.org
+
+# Using lowercase -o forces curl to write to the exact filename specified
+if ! curl -f -L -o cachyos-repo.tar.xz https://cachyos.org; then
+    echo "ERROR: Failed to download the CachyOS repository archive."
+    exit 1
+fi
+
 tar xvf cachyos-repo.tar.xz && cd cachyos-repo
 ./cachyos-repo.sh --quiet || true
 cd ..
