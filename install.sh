@@ -124,6 +124,9 @@ curl -fL https://mirror.cachyos.org/cachyos-repo.tar.xz \
 tar -xf "$INSTALL_WORKDIR/cachyos-repo.tar.xz" -C "$INSTALL_WORKDIR"
 (
     cd "$INSTALL_WORKDIR/cachyos-repo"
+    # The upstream script does not expose a non-interactive flag, so add
+    # pacman's supported flag to its package operations before running it.
+    sed -i -E 's/^([[:space:]]*)pacman /\1pacman --noconfirm /' cachyos-repo.sh
     ./cachyos-repo.sh --install
 )
 
