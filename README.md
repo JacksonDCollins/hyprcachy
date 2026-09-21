@@ -24,8 +24,18 @@ forces a laptop-specific 4K mode and `work` references physical monitor outputs.
 bootstrap, and initial bootloader/Snapper setup. It invokes `setup.sh` inside the
 new installation and creates the initial snapshot after setup succeeds.
 
-The old single-file `script=.../install.sh` boot command is no longer sufficient:
-its sibling `setup.sh` must also be downloaded. Prefer the explicit commands above.
+To launch automatically from an Arch ISO, append this to its UEFI boot entry's
+kernel options (press `e` in the boot menu for a one-time edit):
+
+```text
+script=https://raw.githubusercontent.com/JacksonDCollins/hyprcachy/refs/heads/main/boot.sh
+```
+
+`boot.sh` downloads both scripts into a temporary directory and runs the installer.
+Internet access is required; download failures stop execution, and disk erasure
+still requires confirmation. No script needs to be embedded in the ISO.
+For a persistent ISO edit, change only the existing entry's options in both the
+ISO filesystem and its embedded EFI boot image; retain the normal menu defaults.
 
 ## Reapply configuration on an existing Hyprcachy install
 
@@ -73,7 +83,8 @@ rerun **setup.sh**, never `install.sh`.
 ## Non-destructive checks
 
 ```bash
-bash -n install.sh setup.sh
+for script in boot.sh install.sh setup.sh; do bash -n "$script" || exit; done
+python tests/test_boot.py
 python tests/test_dotfiles.py
 python tests/test_session.py
 python tests/test_setup.py
