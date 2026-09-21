@@ -26,6 +26,25 @@ with tempfile.TemporaryDirectory() as tmp:
     systemctl.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$CALLS"\n')
     systemctl.chmod(0o755)
     env = dict(os.environ, PATH=f'{bin_dir}:{os.environ["PATH"]}', CALLS=str(base / 'calls'))
+    # /run/archiso is visible in both the live ISO and an arch-chroot target.
+    release = base / 'arch-release'
+    release.touch()
+    live = base / 'archiso'
+    detect = bin_dir / 'systemd-detect-virt'
+    detect.write_text('#!/bin/sh\n[ "$*" = "--chroot --quiet" ] || exit 2\nexit "$CHROOT_STATUS"\n')
+    detect.chmod(0o755)
+    guard = source[source.index('[[ -f /etc/arch-release'):source.index('\nuser=')]
+    guard = guard.replace('/etc/arch-release', str(release)).replace('/run/archiso', str(live))
+    guard = 'set -euo pipefail\ndie() { echo "$*" >&2; exit 1; }\n' + guard
+    for marker, chroot_status, expected in [(False, '1', 0), (True, '1', 1), (True, '0', 0), (True, '2', 1)]:
+        if marker:
+            live.mkdir(exist_ok=True)
+        result = subprocess.run(['bash', '-c', guard], env=dict(env, CHROOT_STATUS=chroot_status),
+                                capture_output=True, text=True)
+        assert result.returncode == expected, result.stderr
+    release.unlink()
+    assert subprocess.run(['bash', '-c', guard], env=dict(env, CHROOT_STATUS='0'),
+                          capture_output=True).returncode == 1
     body = 'set -euo pipefail\ndie() { echo "$*" >&2; exit 1; }\n' + source.split('# Replace only', 1)[1].split('\n', 1)[1]
     body = body.replace('/etc/greetd/', str(config.parent) + '/')
 
@@ -50,4 +69,4 @@ with tempfile.TemporaryDirectory() as tmp:
     assert backup.read_text() == 'custom config'
     calls = (base / 'calls').read_text().splitlines()
     assert calls == ['enable NetworkManager greetd.service', '--global enable hyprpolkitagent.service'] * 3
-print('PASS: install/setup separation, repeatable config backups, symlink refusal, and enable-only services')
+print('PASS: live ISO refused, chroot allowed, install/setup separation, config backups and enable-only services')

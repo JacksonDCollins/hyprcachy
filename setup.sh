@@ -15,7 +15,11 @@ PACKAGES=(
 die() { echo "Error: $*" >&2; exit 1; }
 (( EUID == 0 )) || die "Run with sudo: sudo ./setup.sh [username] [profile]"
 (( $# <= 2 )) || die "Usage: sudo ./setup.sh [username] [profile]"
-[[ -f /etc/arch-release && ! -d /run/archiso ]] || die "Run inside the installed system, not the live ISO."
+[[ -f /etc/arch-release ]] || die "This setup requires an Arch-based system."
+# arch-chroot bind-mounts the live ISO's /run into the installed target.
+if [[ -d /run/archiso ]] && ! systemd-detect-virt --chroot --quiet; then
+    die "Run inside the installed system, not the live ISO."
+fi
 user=${1:-${SUDO_USER:-}}
 [[ "$user" =~ ^[a-z_][a-z0-9_-]{0,31}$ && "$user" != root ]] || die "Specify an existing non-root username."
 account=$(getent passwd "$user") || die "User $user does not exist."
