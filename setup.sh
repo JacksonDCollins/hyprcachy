@@ -92,7 +92,7 @@ for name in "${profiles[@]}"; do
     [[ "$profile" != "$name" ]] || valid=1
 done
 (( valid )) || { echo "No valid profile selected; pass an available profile to setup.sh." >&2; exit 1; }
-bash ./install.sh "$profile"
+bash ./setup.sh "$profile"
 ' -- "$profile"
 
 # Replace only this owned system config; preserve each changed version first.

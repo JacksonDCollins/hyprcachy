@@ -9,9 +9,9 @@ and the Quickshell wallpaper shell) and supporting tools, fonts, and development
 dependencies. These do not belong in Hyprcachy's system package list.
 Dotfiles own `packages-arch.txt` and a standalone `setup.sh` bootstrap. Hyprcachy
 reads and validates that package list after cloning/updating dotfiles, installs
-its packages with pacman, then applies configs as the user. No dotfiles script is
-executed as root. Additional Neovim language runtimes are still project/dotfiles
-concerns; this transfer does not add every toolchain.
+its packages with pacman, then calls dotfiles' `setup.sh` once as the user.
+Dotfiles own configuration/runtime setup sequencing and runtime versions.
+No dotfiles script is executed as root.
 
 Publish the dotfiles dependency list before publishing this Hyprcachy integration.
 
@@ -80,6 +80,8 @@ sudo ./setup.sh jackson default  # explicitly change machine profile
   removed entries are not automatically uninstalled.
 - Uses an explicitly supplied profile, otherwise the dotfiles saved profile at
   `~/.local/state/dotfiles/machine`. Prompts from the available profiles on first use.
+- Runs dotfiles' `setup.sh` as the user; it applies configs and installs its pinned
+  mise runtimes. Requires internet; PHP builds from source and may take several minutes.
 - Replaces `/etc/greetd/config.toml` only if changed. Its previous contents are
   saved as `config.toml.hyprcachy-backup`, with older backups numbered.
 - Enables NetworkManager, greetd, and the graphical-session polkit service.
