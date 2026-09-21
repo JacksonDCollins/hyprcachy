@@ -5,8 +5,8 @@ from pathlib import Path
 
 import tomllib
 
-source = (Path(__file__).resolve().parents[1] / 'install.sh').read_text()
-packages = shlex.split(source.split('EXTRA_PACKAGES=(', 1)[1].split(')', 1)[0])
+source = (Path(__file__).resolve().parents[1] / 'setup.sh').read_text()
+packages = shlex.split(source.split('PACKAGES=(', 1)[1].split(')', 1)[0])
 assert {'uwsm', 'greetd', 'greetd-tuigreet', 'hyprpolkitagent'} <= set(packages)
 config = tomllib.loads(source.split("<<'GREETD'\n", 1)[1].split('\nGREETD', 1)[0])
 assert config['terminal']['vt'] == 1

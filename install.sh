@@ -1,15 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Add additional repository packages here.
-EXTRA_PACKAGES=(
-    hyprland quickshell git stow greetd greetd-tuigreet uwsm
-    foot ttf-jetbrains-mono-nerd neovim tmux fzf zoxide fastfetch starship
-    ripgrep fd wl-clipboard base-devel
-    mako pipewire wireplumber pipewire-pulse pipewire-alsa
-    xdg-desktop-portal-hyprland xdg-desktop-portal-gtk hyprpolkitagent
-    qt5-wayland qt6-wayland noto-fonts
-)
+# Clone/download both scripts together; fail before touching disks if setup is missing.
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+[[ -r "$SCRIPT_DIR/setup.sh" ]] || { echo "setup.sh must be beside install.sh" >&2; exit 1; }
 MOUNTED_TARGET=0
 
 cleanup() {
@@ -139,8 +133,7 @@ rm -rf /mnt/root/cachyos-repo /mnt/root/cachyos-repo.tar.xz
 
 echo "Installing CachyOS kernel and boot integration into the target..."
 arch-chroot /mnt pacman --noconfirm -S --needed \
-    linux-cachyos limine-mkinitcpio-hook limine-snapper-sync \
-    "${EXTRA_PACKAGES[@]}"
+    linux-cachyos limine-mkinitcpio-hook limine-snapper-sync
 
 ROOT_UUID="$(blkid -s UUID -o value "$ROOT_PART")"
 [[ -n "$ROOT_UUID" ]] || die "Could not determine the root filesystem UUID."
@@ -162,21 +155,6 @@ pacman-key --init
 pacman-key --populate archlinux cachyos
 
 printf '%s\n' "$hostname" > /etc/hostname
-systemctl enable NetworkManager
-
-# Password-authenticated console greeter; launch Hyprland after login.
-cat > /etc/greetd/config.toml <<'GREETD'
-[terminal]
-vt = 1
-
-[default_session]
-command = "tuigreet --time --remember --cmd 'uwsm start -e -D Hyprland hyprland.desktop'"
-user = "greeter"
-GREETD
-systemctl enable greetd.service
-# Enable for graphical sessions without starting services in the installer chroot.
-systemctl --global enable hyprpolkitagent.service
-
 printf 'en_US.UTF-8 UTF-8\n' > /etc/locale.gen
 locale-gen
 printf 'LANG=en_US.UTF-8\n' > /etc/locale.conf
@@ -219,8 +197,6 @@ grep '^HOOKS=' /etc/mkinitcpio.conf | grep -qw "$overlay_hook" || {
 
 limine-install
 limine-update
-snapper --no-dbus -c root create --description "Initial installation"
-limine-snapper-sync
 systemctl enable limine-snapper-sync.service
 EOF
 
@@ -228,31 +204,11 @@ EOF
 printf 'root:%s\n%s:%s\n' "$ROOT_PASSWORD" "$NEW_USER" "$USER_PASSWORD" | arch-chroot /mnt chpasswd
 unset ROOT_PASSWORD USER_PASSWORD
 
-# --- 9. USER DOTFILES ---
-echo "Installing dotfiles as $NEW_USER..."
-arch-chroot /mnt runuser -u "$NEW_USER" -- env \
-    HOME="/home/$NEW_USER" USER="$NEW_USER" LOGNAME="$NEW_USER" /usr/bin/bash -c '
-set -euo pipefail
-git clone --branch standalone-hyprland https://github.com/JacksonDCollins/dotfiles.git "$HOME/dotfiles"
-cd "$HOME/dotfiles"
-profiles=()
-for dir in machines/*; do
-    [[ -d "$dir" && ! -L "$dir" ]] || continue
-    profile=${dir#machines/}
-    [[ "$profile" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || continue
-    profiles+=("$profile")
-done
-(( ${#profiles[@]} )) || { echo "No valid dotfiles machine profiles found." >&2; exit 1; }
-PS3="Select a dotfiles machine profile (number): "
-select profile in "${profiles[@]}"; do
-    if [[ -n "$profile" ]]; then
-        bash ./install.sh "$profile"
-        exit 0
-    fi
-    echo "Invalid selection; enter a listed number." >&2
-done
-echo "No profile selected; dotfiles setup cancelled." >&2
-exit 1
-'
+# --- 9. REPEATABLE SYSTEM AND USER SETUP ---
+install -m 0700 "$SCRIPT_DIR/setup.sh" /mnt/root/hyprcachy-setup.sh
+arch-chroot /mnt /usr/bin/bash /root/hyprcachy-setup.sh "$NEW_USER"
+rm /mnt/root/hyprcachy-setup.sh
+arch-chroot /mnt snapper --no-dbus -c root create --description "Initial installation"
+arch-chroot /mnt limine-snapper-sync
 
 echo "=== FINISHED! Remove the installation media and reboot. ==="
