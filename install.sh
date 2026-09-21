@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Add additional repository packages here.
 EXTRA_PACKAGES=(
-    hyprland quickshell git stow
+    hyprland quickshell git stow greetd greetd-tuigreet
     foot ttf-jetbrains-mono-nerd neovim tmux fzf zoxide fastfetch starship
     ripgrep fd wl-clipboard base-devel
 )
@@ -160,6 +160,17 @@ pacman-key --populate archlinux cachyos
 
 printf '%s\n' "$hostname" > /etc/hostname
 systemctl enable NetworkManager
+
+# Password-authenticated console greeter; launch Hyprland after login.
+cat > /etc/greetd/config.toml <<'GREETD'
+[terminal]
+vt = 1
+
+[default_session]
+command = "tuigreet --time --remember --cmd start-hyprland"
+user = "greeter"
+GREETD
+systemctl enable greetd.service
 
 printf 'en_US.UTF-8 UTF-8\n' > /etc/locale.gen
 locale-gen
