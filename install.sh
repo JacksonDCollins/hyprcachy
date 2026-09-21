@@ -3,9 +3,12 @@ set -euo pipefail
 
 # Add additional repository packages here.
 EXTRA_PACKAGES=(
-    hyprland quickshell git stow greetd greetd-tuigreet
+    hyprland quickshell git stow greetd greetd-tuigreet uwsm
     foot ttf-jetbrains-mono-nerd neovim tmux fzf zoxide fastfetch starship
     ripgrep fd wl-clipboard base-devel
+    mako pipewire wireplumber pipewire-pulse pipewire-alsa
+    xdg-desktop-portal-hyprland xdg-desktop-portal-gtk hyprpolkitagent
+    qt5-wayland qt6-wayland noto-fonts
 )
 MOUNTED_TARGET=0
 
@@ -167,10 +170,12 @@ cat > /etc/greetd/config.toml <<'GREETD'
 vt = 1
 
 [default_session]
-command = "tuigreet --time --remember --cmd start-hyprland"
+command = "tuigreet --time --remember --cmd 'uwsm start -e -D Hyprland hyprland.desktop'"
 user = "greeter"
 GREETD
 systemctl enable greetd.service
+# Enable for graphical sessions without starting services in the installer chroot.
+systemctl --global enable hyprpolkitagent.service
 
 printf 'en_US.UTF-8 UTF-8\n' > /etc/locale.gen
 locale-gen
