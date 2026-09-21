@@ -4,9 +4,7 @@ set -euo pipefail
 
 # Removing a package here does not uninstall it from an existing system.
 PACKAGES=(
-    hyprland quickshell git stow greetd greetd-tuigreet uwsm
-    foot ttf-jetbrains-mono-nerd neovim tmux fzf zoxide fastfetch starship
-    ripgrep fd wl-clipboard base-devel
+    hyprland git stow greetd greetd-tuigreet uwsm
     mako pipewire wireplumber pipewire-pulse pipewire-alsa
     xdg-desktop-portal-hyprland xdg-desktop-portal-gtk hyprpolkitagent
     qt5-wayland qt6-wayland noto-fonts networkmanager
@@ -56,7 +54,21 @@ else
     git clone --branch "$branch" "$url" "$repo"
     cd "$repo"
 fi
+' -- "$profile"
 
+# Dotfiles own this data-only list. Never source or run their scripts as root.
+mapfile -t dotfiles_packages < "$user_home/dotfiles/packages-arch.txt"
+(( ${#dotfiles_packages[@]} )) || die "Empty dotfiles dependency list."
+for package in "${dotfiles_packages[@]}"; do
+    [[ "$package" =~ ^[a-z0-9][a-z0-9@._+-]*$ ]] || die "Invalid dotfiles dependency package name."
+done
+pacman -Syu --needed --noconfirm -- "${dotfiles_packages[@]}"
+
+# Configuration installation stays unprivileged, including machine selection.
+runuser -u "$user" -- env -u BASH_ENV -u ENV HOME="$user_home" USER="$user" LOGNAME="$user" /usr/bin/bash -c '
+set -euo pipefail
+profile=$1
+cd "$HOME/dotfiles"
 profiles=()
 for dir in machines/*; do
     [[ -d "$dir" && ! -L "$dir" ]] || continue

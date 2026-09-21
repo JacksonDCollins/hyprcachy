@@ -11,7 +11,10 @@ command = source[source.index('runuser -u '):source.index('\n# Replace only')]
 argv = shlex.split(command)
 assert argv[:3] == ['runuser', '-u', '$user']
 assert 'HOME=$user_home' in argv
-body = argv[argv.index('-c') + 1]
+bodies = [argv[i + 1] for i, arg in enumerate(argv) if arg == '-c']
+assert len(bodies) == 2
+package_phase = source[source.index('mapfile -t dotfiles_packages'):source.index('# Configuration installation')]
+body = 'user_home=$HOME\ndie() { echo "$*" >&2; exit 1; }\n' + '\n'.join([bodies[0], package_phase, bodies[1]])
 url = 'https://github.com/JacksonDCollins/dotfiles.git'
 branch = 'standalone-hyprland'
 
@@ -38,6 +41,7 @@ printf "%s" "$1" > "$HOME/.local/state/dotfiles/machine"
 printf "%s\\n" "$1" >> "$HOME/selected"
 exit "${SETUP_STATUS:-0}"
 ''')
+    (remote / 'packages-arch.txt').write_text('fzf\n')
     git(remote, 'add', '.')
     git(remote, 'commit', '-qm', 'fixture')
 
@@ -54,6 +58,9 @@ fi
 exec {shlex.quote(real_git)} "$@"
 ''')
     wrapper.chmod(0o755)
+    pacman = bin_dir / 'pacman'
+    pacman.write_text('#!/bin/bash\n[[ "$*" == "-Syu --needed --noconfirm -- fzf" ]] || exit 2\nexit "${PACMAN_STATUS:-0}"\n')
+    pacman.chmod(0o755)
     env['PATH'] = f'{bin_dir}:{env["PATH"]}'
 
     def run(answer='', profile='', status=0):
@@ -65,6 +72,10 @@ exec {shlex.quote(real_git)} "$@"
     run('99\n2\n')
     assert (home / 'selected').read_text().splitlines() == ['new-profile']
     repo = home / 'dotfiles'
+    env['PACMAN_STATUS'] = '9'
+    run(status=9)
+    assert (home / 'selected').read_text().splitlines() == ['new-profile']
+    del env['PACMAN_STATUS']
     (remote / 'updated').write_text('new upstream version')
     git(remote, 'add', '.')
     git(remote, 'commit', '-qm', 'update')

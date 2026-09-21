@@ -14,6 +14,10 @@ assert 'pacman -Syu --needed' in source
 assert 'arch-chroot /mnt /usr/bin/bash /root/hyprcachy-setup.sh "$NEW_USER"' in installer
 assert installer.index('setup.sh must be beside') < installer.index('sgdisk --zap-all')
 assert 'git clone' not in installer
+system_packages = source.split('PACKAGES=(', 1)[1].split(')', 1)[0].split()
+assert not {'fzf', 'zoxide', 'starship', 'fastfetch', 'ttf-jetbrains-mono-nerd',
+            'wl-clipboard', 'ripgrep', 'fd', 'base-devel',
+            'foot', 'neovim', 'tmux', 'quickshell'} & set(system_packages)
 
 with tempfile.TemporaryDirectory() as tmp:
     base = Path(tmp)
@@ -26,6 +30,20 @@ with tempfile.TemporaryDirectory() as tmp:
     systemctl.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$CALLS"\n')
     systemctl.chmod(0o755)
     env = dict(os.environ, PATH=f'{bin_dir}:{os.environ["PATH"]}', CALLS=str(base / 'calls'))
+    # Root consumes only validated package names, never shell code from dotfiles.
+    (base / 'dotfiles').mkdir()
+    manifest = base / 'dotfiles/packages-arch.txt'
+    pacman = bin_dir / 'pacman'
+    pacman.write_text('#!/bin/sh\nprintf "%s\\n" "$*" > "$CALLS"\n')
+    pacman.chmod(0o755)
+    phase = source[source.index('mapfile -t dotfiles_packages'):source.index('# Configuration installation')]
+    phase = 'set -euo pipefail\ndie() { exit 1; }\n' + phase
+    for contents, expected in [('fzf\n', 0), ('', 1), ('--root=/tmp\n', 1), ('$(id)\n', 1), ('fzf\n\n', 1)]:
+        manifest.write_text(contents)
+        (base / 'calls').unlink(missing_ok=True)
+        result = subprocess.run(['bash', '-c', phase], env=dict(env, user_home=str(base)), capture_output=True)
+        assert result.returncode == expected
+        assert (base / 'calls').exists() == (expected == 0)
     # /run/archiso is visible in both the live ISO and an arch-chroot target.
     release = base / 'arch-release'
     release.touch()
