@@ -81,7 +81,7 @@ sudo ./setup.sh jackson default  # explicitly change machine profile
 - Uses an explicitly supplied profile, otherwise the dotfiles saved profile at
   `~/.local/state/dotfiles/machine`. Prompts from the available profiles on first use.
 - Runs dotfiles' `setup.sh` as the user; it applies configs and installs its pinned
-  mise runtimes. Requires internet; PHP builds from source and may take several minutes.
+  mise runtimes and editor tools. Requires internet; initial setup may take several minutes.
 - Replaces `/etc/greetd/config.toml` only if changed. Its previous contents are
   saved as `config.toml.hyprcachy-backup`, with older backups numbered.
 - Enables NetworkManager, greetd, and the graphical-session polkit service.
