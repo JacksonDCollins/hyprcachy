@@ -8,9 +8,56 @@ PACKAGES=(
     mako pipewire wireplumber pipewire-pulse pipewire-alsa
     xdg-desktop-portal-hyprland xdg-desktop-portal-gtk hyprpolkitagent
     qt5-wayland qt6-wayland noto-fonts networkmanager
+    chwd pciutils linux-firmware
 )
 
 die() { echo "Error: $*" >&2; exit 1; }
+hardware_report() {
+    echo '=== GPU hardware and drivers (read-only) ==='
+    if systemd-detect-virt --chroot --quiet; then
+        echo 'Chroot: loaded modules/sysfs describe the host, NOT the installed target. Recheck after reboot.'
+    fi
+    lspci -Dnnk -d ::03 || true
+    echo '--- Installed chwd profiles ---'
+    if command -v chwd >/dev/null; then chwd --list-installed; else echo 'chwd not installed'; fi
+    echo '--- Installed graphics/kernel packages ---'
+    pacman -Q | grep -E '^(linux[^ ]*|.*nvidia[^ ]*|mesa|lib32-mesa|egl-wayland|vulkan[^ ]*|switcheroo-control) ' || true
+    echo '--- DKMS build status ---'
+    if command -v dkms >/dev/null; then dkms status; else echo 'DKMS not installed (prebuilt modules do not require it)'; fi
+    echo '--- NVIDIA module for each installed kernel ---'
+    local pkgbase kernel parameter service
+    for pkgbase in /usr/lib/modules/*/pkgbase; do
+        [[ -f "$pkgbase" ]] || continue
+        kernel=${pkgbase%/pkgbase}; kernel=${kernel##*/}
+        printf '%s (%s): ' "$kernel" "$(< "$pkgbase")"
+        modinfo -k "$kernel" -F version nvidia 2>/dev/null || echo 'no NVIDIA module (normal on non-NVIDIA systems)'
+    done
+    echo '--- Running NVIDIA DRM parameters (Wayland expects modeset=Y) ---'
+    for parameter in modeset fbdev; do
+        if [[ -r /sys/module/nvidia_drm/parameters/$parameter ]]; then
+            printf '%s=%s\n' "$parameter" "$(< "/sys/module/nvidia_drm/parameters/$parameter")"
+        else
+            echo "$parameter: unavailable; NVIDIA DRM is not loaded or parameter cannot be read"
+        fi
+    done
+    echo '--- NVIDIA power-management configuration ---'
+    if [[ -r /proc/driver/nvidia/params ]]; then
+        grep -E 'PreserveVideoMemoryAllocations|TemporaryFilePath|DynamicPowerManagement' /proc/driver/nvidia/params || true
+    fi
+    for service in nvidia-suspend nvidia-resume nvidia-hibernate nvidia-powerd switcheroo-control; do
+        printf '%s: ' "$service"
+        systemctl is-enabled "$service.service" 2>/dev/null || true
+    done
+    echo 'After reboot, inspect failures with: journalctl -b -k --grep="NVRM|nvidia|nouveau|drm"'
+}
+
+# Reporting never installs packages, rebuilds boot files, or requires an account.
+if [[ ${1:-} == --hardware-report ]]; then
+    (( $# == 1 )) || die 'Usage: ./setup.sh --hardware-report'
+    hardware_report
+    exit 0
+fi
+
 (( EUID == 0 )) || die "Run with sudo: sudo ./setup.sh [username] [profile]"
 (( $# <= 2 )) || die "Usage: sudo ./setup.sh [username] [profile]"
 [[ -f /etc/arch-release ]] || die "This setup requires an Arch-based system."
@@ -34,6 +81,31 @@ fi
 
 # Upgrade together with dependency installation; never perform a partial Arch upgrade.
 pacman -Syu --needed --noconfirm "${PACKAGES[@]}"
+
+# Use maintained GPU profiles, including legacy NVIDIA and hybrid laptops.
+# Running inside arch-chroot makes / the target; never select kernels with uname -r
+# here, since that is the live ISO's kernel. chwd inspects installed pkgbase files.
+# No --force: chwd skips profiles already installed on repeat runs.
+echo 'Configuring graphics hardware with CachyOS profiles...'
+for gpu_class in 0300 0302 0380; do
+    chwd --autoconfigure "$gpu_class"
+done
+profiles=$(chwd --list-installed)
+printf '%s\n' "$profiles"
+if grep -qi nvidia <<< "$profiles"; then
+    # Catch failed/missing DKMS or prebuilt modules before declaring setup done.
+    found_kernel=0
+    for pkgbase in /usr/lib/modules/*/pkgbase; do
+        [[ -f "$pkgbase" ]] || continue
+        found_kernel=1
+        kernel=${pkgbase%/pkgbase}; kernel=${kernel##*/}
+        modinfo -k "$kernel" nvidia >/dev/null || die "NVIDIA module missing for $kernel; fix the driver build before rebooting."
+    done
+    (( found_kernel )) || die 'No installed kernels found for NVIDIA validation.'
+fi
+# Also rebuild on reruns: profile hooks may have changed configuration before a
+# previous package operation failed. mkinitcpio errors must stop setup.
+mkinitcpio -P
 
 # Fail on local changes or a different checkout, rather than resetting user work.
 # Pass all user-controlled values as arguments, not shell source.

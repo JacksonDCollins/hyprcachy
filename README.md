@@ -72,6 +72,9 @@ sudo ./setup.sh jackson default  # explicitly change machine profile
 - Performs a full `pacman -Syu --needed --noconfirm` transaction, including system
   upgrades and installation of the packages in its `PACKAGES` array. Review this
   list before running. Removing an entry never uninstalls a package.
+- Configures display-controller classes with CachyOS `chwd` profiles and rebuilds
+  initramfs with `mkinitcpio -P`. Existing profiles are skipped, not force-reinstalled.
+  Missing NVIDIA modules for installed kernels or initramfs errors stop setup.
 - Clones or fast-forward-updates `~/dotfiles` on `standalone-hyprland`, as the user.
   Refuses dirty checkouts, unexpected origins/branches, and divergent history;
   it never resets, stashes, merges, or force-pulls your work.
@@ -97,15 +100,52 @@ Setup stops on errors but is not an all-or-nothing transaction: package upgrades
 may finish before a dotfiles/configuration error. Fix the reported problem and
 rerun **setup.sh**, never `install.sh`.
 
+## Graphics drivers and NVIDIA
+
+Hardware support belongs to Hyprcachy, not the dotfiles package manifest.
+`setup.sh` installs `chwd`, `pciutils`, and firmware, then autoconfigures VGA, 3D,
+and other display controllers (`0300`, `0302`, `0380`). Fresh installations use
+this same stage inside `arch-chroot`; driver selection uses the target's installed
+kernels, not the ISO's running kernel.
+
+[CachyOS profiles](https://wiki.cachyos.org/features/chwd/chwd/) own GPU ID matching,
+legacy NVIDIA branches, matching prebuilt CachyOS modules/DKMS dependencies,
+initramfs module configuration, and laptop PRIME/power-management setup. Profile
+package lists can include 32-bit libraries; keep the standard CachyOS repositories
+and multilib enabled. Review `chwd --list` and existing profiles before applying
+setup to a machine with manually configured drivers. Package/profile conflicts
+are not overridden by Hyprcachy; resolve them explicitly and rerun setup. Changing
+GPU vendors can require removing the old profile with chwd first.
+
+We do not add global NVIDIA environment variables, force the discrete GPU, unload
+live GPU modules, or duplicate NVIDIA power-management defaults with historical
+workarounds. Profiles can replace their owned configuration and enable services;
+package upgrades can run service hooks. Reboot after driver changes. Secure Boot
+module signing, unsupported GPUs, and machine-specific suspend/display problems
+still require separate configuration—automatic detection is not a guarantee that
+every NVIDIA generation works with current Hyprland.
+
+After reboot, inspect installed profiles, packages, per-kernel NVIDIA modules,
+DKMS build status, live DRM parameters, and power-management service configuration:
+
+```bash
+bash setup.sh --hardware-report
+# Optional: sudo bash setup.sh --hardware-report for restricted kernel parameters.
+```
+
+This mode is read-only and bypasses installation/account setup. In a chroot it
+warns that live kernel/sysfs information belongs to the host. On NVIDIA hardware,
+verify DRM `modeset=Y`; review DKMS status for unbuilt modules and kernel logs for
+failures. Power services vary by driver/hardware—an absent service alone is not
+proof of a problem. Test suspend/resume and external displays on the actual machine.
+
 ## Non-destructive checks
 
 ```bash
 for script in boot.sh install.sh setup.sh; do bash -n "$script" || exit; done
-python tests/test_boot.py
-python tests/test_dotfiles.py
-python tests/test_session.py
-python tests/test_setup.py
+bash setup.sh --hardware-report
 ```
 
-Tests use temporary directories, local Git repositories, and mocked service
-commands. Full install, first boot, and login/logout still need VM testing.
+Driver setup is validated with temporary mocked commands, without running real
+package transactions. Full install, NVIDIA first boot, suspend/resume, and hybrid
+GPU offloading still require hardware testing.
