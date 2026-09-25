@@ -73,7 +73,9 @@ sudo ./setup.sh jackson default  # explicitly change machine profile
   upgrades and installation of the packages in its `PACKAGES` array. Review this
   list before running. Removing an entry never uninstalls a package.
 - Configures display-controller classes with CachyOS `chwd` profiles and rebuilds
-  initramfs with `mkinitcpio -P`. Existing profiles are skipped, not force-reinstalled.
+  initramfs and Limine entries directly with `limine-mkinitcpio`, without the
+  wrapper's confirmation prompt (`mkinitcpio -P` on non-Limine systems).
+  Existing profiles are skipped, not force-reinstalled.
   Missing NVIDIA modules for installed kernels or initramfs errors stop setup.
 - Clones or fast-forward-updates `~/dotfiles` on `standalone-hyprland`, as the user.
   Refuses dirty checkouts, unexpected origins/branches, and divergent history;

@@ -104,8 +104,13 @@ if grep -qi nvidia <<< "$profiles"; then
     (( found_kernel )) || die 'No installed kernels found for NVIDIA validation.'
 fi
 # Also rebuild on reruns: profile hooks may have changed configuration before a
-# previous package operation failed. mkinitcpio errors must stop setup.
-mkinitcpio -P
+# previous package operation failed. Rebuild errors must stop setup.
+# Calling Limine directly also updates its entries, without the mkinitcpio wrapper prompt.
+if command -v limine-mkinitcpio >/dev/null; then
+    limine-mkinitcpio
+else
+    mkinitcpio -P
+fi
 
 # Fail on local changes or a different checkout, rather than resetting user work.
 # Pass all user-controlled values as arguments, not shell source.
