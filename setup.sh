@@ -4,10 +4,10 @@ set -euo pipefail
 
 # Removing a package here does not uninstall it from an existing system.
 PACKAGES=(
-    hyprland git stow greetd greetd-tuigreet uwsm
-    mako pipewire wireplumber pipewire-pulse pipewire-alsa
+    hyprland hyprlock hypridle git stow greetd greetd-tuigreet uwsm
+    pipewire wireplumber pipewire-pulse pipewire-alsa
     xdg-desktop-portal-hyprland xdg-desktop-portal-gtk hyprpolkitagent
-    qt5-wayland qt6-wayland noto-fonts networkmanager
+    qt5-wayland qt6-wayland noto-fonts networkmanager bluez upower
     chwd pciutils linux-firmware
 )
 
@@ -190,7 +190,7 @@ if ! cmp -s "$workdir/greetd.toml" /etc/greetd/config.toml; then
     fi
     install -m 0644 "$workdir/greetd.toml" /etc/greetd/config.toml
 fi
-systemctl enable NetworkManager greetd.service
+systemctl enable NetworkManager bluetooth.service greetd.service
 systemctl --global enable hyprpolkitagent.service
 
 echo "Setup complete. Log out and back in (or reboot after system updates) to apply session changes."

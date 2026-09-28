@@ -15,7 +15,7 @@ No dotfiles script is executed as root.
 
 Publish the dotfiles dependency list before publishing this Hyprcachy integration.
 
-## Fresh installation — DESTRUCTIVE
+## Fresh installation — partitioning required
 
 Boot a current Arch ISO in UEFI mode. Download **both** scripts together before
 starting (the installer checks for `setup.sh` before touching disks):
@@ -29,8 +29,67 @@ bash install.sh
 ```
 
 Alternatively clone this repository and run `bash install.sh` from it.
-The selected disk is erased. Use the `default` dotfiles profile in a VM; `jacktop`
-forces a laptop-specific 4K mode and `work` references physical monitor outputs.
+The installer starts with searchable, numbered choices for:
+
+- **Keyboard:** available console-to-XKB mappings supplied by systemd (search
+  `us`, `uk`, `de`, etc.). It applies the console keymap with `loadkeys` and asks
+  you to type a **non-secret sample** and confirm it before entering passwords.
+  Use the live Linux console: SSH/graphical terminals retain their client's
+  keyboard layout, which you must check separately. Cancelling does not restore
+  the previous live console keymap.
+- **Locale:** a supported UTF-8 locale, such as `en_AU.UTF-8` or `de_DE.UTF-8`.
+  This controls the new system's language and regional formatting.
+- **Timezone:** search city/region keywords; `new york` and `New_York` both find
+  `America/New_York`. Only the installed system's timezone changes; RTC stays UTC.
+
+Search is case-insensitive and all keywords must match (not typo-tolerant).
+More than 20 matches asks for a narrower query. Enter at the number prompt
+searches again; `q` or Ctrl+D cancels before target disk writes. These menus use
+Bash and existing Arch ISO tools/data, without extra packages.
+
+The installed console uses `/etc/vconsole.conf`. Desktop keyboard settings live
+in `/etc/environment.d/60-keyboard.conf`; the dotfiles Hyprland configuration
+honors its standard `XKB_DEFAULT_*` variables through UWSM/systemd user services.
+Without those variables, standalone dotfiles retain US input. Publish the matching
+dotfiles input change before using the GitHub-based installer; old dotfiles
+hardcode US input. The mapping's layout-switch options are retained, but the
+legacy Ctrl+Alt+Backspace termination option is not enabled.
+
+Choose an installation mode:
+
+- **Install alongside an existing OS** (default): select one contiguous
+  unallocated region on a healthy GPT disk. Creates a separate **2 GiB EFI/boot**
+  partition and a Btrfs root using the rest of that region. At least **18 GiB**
+  of aligned free space is required; **40 GiB or more is recommended** for apps,
+  development tools and snapshots. Existing partitions, including other EFI
+  partitions, are not formatted, resized or reused. Confirm with `INSTALL /dev/…`.
+- **Erase disk**: destroys the entire selected disk, with a separate
+  `ERASE /dev/…` confirmation.
+
+After hostname, username and password entry, a **final review** shows the target
+disk, proposed disk changes, timezone, locale, and console/desktop keyboard choices.
+Passwords are never displayed. Only then must you type `INSTALL /dev/…` or
+`ERASE /dev/…`; a mismatch or EOF aborts before target disk writes.
+
+The alongside mode supports 512-byte and 4096-byte logical sectors. It refuses
+MBR/hybrid or damaged GPT tables, mounted filesystems, active swap/device mappings,
+insufficient free space, and a partition table that changed after selection.
+There is no automatic shrinking, moving, GPT repair or conversion. Back up your
+important data first, fully shut down the existing OS (not hibernation/Fast Startup),
+and keep any BitLocker recovery key available. Do not run other partitioning tools
+concurrently. GPT backups/logs are saved under `/root/hyprcachy-partitions.*` on the
+live system; copy them elsewhere before reboot. These are **not data backups** or
+an automatic rollback; failed installations can leave newly created partitions.
+
+Hyprcachy uses its **own EFI partition**, not the existing OS's bootloader files.
+Limine registers a new firmware boot entry and **may become the default**; existing
+entries remain available through the firmware boot menu. Firmware support for
+multiple EFI partitions varies; this installer does not configure Secure Boot
+signing. Other operating systems are not scanned by the installer. After booting Hyprcachy, optionally run `sudo limine-scan` to add
+them to its Limine menu, or keep selecting them through firmware.
+
+Use the `default` dotfiles profile in a VM; `jacktop` forces a laptop-specific 4K
+mode and `work` references physical monitor outputs.
 
 `install.sh` owns partitioning, filesystems, accounts/passwords, locale, repository
 bootstrap, and initial bootloader/Snapper setup. It invokes `setup.sh` inside the
@@ -44,8 +103,9 @@ script=https://raw.githubusercontent.com/JacksonDCollins/hyprcachy/refs/heads/ma
 ```
 
 `boot.sh` downloads both scripts into a temporary directory and runs the installer.
-Internet access is required; download failures stop execution, and disk erasure
-still requires confirmation. No script needs to be embedded in the ISO.
+Internet access is required; download failures stop execution. Installation mode,
+region selection and confirmation remain interactive; automatic launch does not
+authorize disk erasure. No script needs to be embedded in the ISO.
 For a persistent ISO edit, change only the existing entry's options in both the
 ISO filesystem and its embedded EFI boot image; retain the normal menu defaults.
 
