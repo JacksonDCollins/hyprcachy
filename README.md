@@ -44,10 +44,16 @@ Matching only the key ID or a subkey is not enough. Bootstrap whitespace, quotin
 and keyserver-host changes are tolerated; changed key identities or unsupported
 key commands abort before disk writes. Key rotation needs a reviewed pin update.
 
-Transfers retry up to three times with connection/transfer deadlines. Pacman uses
-an external curl downloader with retries in both the live bootstrap configuration
-and the installed system; whole package transactions and setup scripts are **not**
-automatically rerun. Successful checks do not guarantee later servers stay online.
+Bootstrap transfers retry transient failures up to three times with connection/
+transfer deadlines (the USB launcher retries up to five times). Permanent HTTP
+404s are not retried. These retries apply only to the installer's own bootstrap
+downloads. Base installation uses normal `pacstrap -K`; this installer does not
+set or remove pacman's `XferCommand` or `ParallelDownloads`, or supply a custom
+pacman configuration. CachyOS's official bootstrap still configures its repositories
+and signing keys as usual. Whole package transactions and setup scripts are **not**
+automatically rerun. Successful checks do not guarantee later
+servers stay online. The bootstrap's `yes` input producer may finish with an
+expected SIGPIPE (141); that status is not logged as an installation failure.
 
 The installer then presents searchable, numbered choices for:
 
@@ -68,7 +74,8 @@ searches again; `q` or Ctrl+D cancels before target disk writes. These menus use
 Bash and existing Arch ISO tools/data, without extra packages.
 
 The installed console uses `/etc/vconsole.conf`. Desktop keyboard settings live
-in `/etc/environment.d/60-keyboard.conf`; the dotfiles Hyprland configuration
+in `/etc/environment.d/60-keyboard.conf`; non-empty values are quoted and unset
+variants/options are omitted because systemd rejects empty assignments. The dotfiles Hyprland configuration
 honors its standard `XKB_DEFAULT_*` variables through UWSM/systemd user services.
 Without those variables, standalone dotfiles retain US input. Publish the matching
 dotfiles input change before using the GitHub-based installer; old dotfiles
@@ -112,6 +119,8 @@ another OS, mount the new Btrfs **`@log`** subvolume read-only, not just `@`.
 Do not rerun `install.sh` blindly after a disk-changing failure.
 
 Hyprcachy uses its **own EFI partition**, not the existing OS's bootloader files.
+It mounts that partition with `umask=0077`, persisted by `genfstab`, so bootloader
+random-seed files and the boot directory are not accessible to other local users.
 Limine registers a new firmware boot entry and **may become the default**; existing
 entries remain available through the firmware boot menu. Firmware support for
 multiple EFI partitions varies; this installer does not configure Secure Boot
@@ -234,19 +243,9 @@ proof of a problem. Test suspend/resume and external displays on the actual mach
 ## Non-destructive checks
 
 ```bash
-for script in boot.sh install.sh setup.sh check-network.sh; do bash -n "$script" || exit; done
-(set -o pipefail; bash check-network.sh | tee hyprcachy-network-check.log)
+for script in boot.sh install.sh setup.sh; do bash -n "$script" || exit; done
 bash setup.sh --hardware-report
 ```
 
-`check-network.sh` uses mocked network commands and a real disposable sparse GPT
-image to verify failed preflights stop before disk writes, signature settings stay
-intact, logs persist privately, and existing partition metadata/data is preserved.
-It requires Bash, Python, GnuPG and util-linux; it never accesses physical disks or
-installs packages. Its PASS output in `hyprcachy-network-check.log` is the repeatable
-verification artifact. A real network preflight was also checked from the host;
-the actual live USB environment still needs its own connectivity check.
-
-Driver setup is validated with temporary mocked commands, without running real
-package transactions. Full install, NVIDIA first boot, suspend/resume, and hybrid
-GPU offloading still require hardware testing.
+Full installation, first boot, suspend/resume, and hybrid GPU offloading require
+hardware testing.

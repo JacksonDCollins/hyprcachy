@@ -6,7 +6,7 @@ base=https://raw.githubusercontent.com/JacksonDCollins/hyprcachy/refs/heads/main
 printf '\nDownloading Hyprcachy installer and setup from GitHub...\n'
 systemd-run --quiet --wait --pipe -p Wants=network-online.target -p After=network-online.target \
     /usr/bin/curl --proto '=https' --fail-early --fail --location \
-    --retry 5 --retry-all-errors --connect-timeout 15 \
+    --retry 5 --retry-connrefused --retry-max-time 120 --connect-timeout 15 --max-time 60 \
     --output "$workdir/install.sh" "$base/install.sh" \
     --output "$workdir/setup.sh" "$base/setup.sh"
 bash -n "$workdir/install.sh"

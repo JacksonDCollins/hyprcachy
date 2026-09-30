@@ -239,15 +239,18 @@ download_file() {
     local url=$1 destination=$2
     shift 2
     curl --proto '=https' --fail --location --show-error --remove-on-error \
-        --retry 3 --retry-all-errors --retry-delay 2 --retry-max-time 120 \
+        --retry 3 --retry-connrefused --retry-delay 2 --retry-max-time 120 \
         --connect-timeout 15 --max-time 60 "$@" --output "$destination" -- "$url"
 }
 
-configure_downloads() {
-    local command="XferCommand = /usr/bin/curl --fail --location --show-error --retry 3 --retry-all-errors --retry-delay 2 --retry-max-time 300 --connect-timeout 15 --max-time 300 --output '%o' -- '%u'"
-    grep -qx '\[options\]' "$1" || die "Missing pacman options section: $1"
-    sed -i -e '/^[[:space:]]*XferCommand[[:space:]]*=/d' \
-        -e "/^\[options\]$/a $command" "$1"
+write_keyboard_environment() {
+    local destination=$1 layout=$2 model=$3 variant=$4 options=$5
+    {
+        printf 'XKB_DEFAULT_LAYOUT="%s"\nXKB_DEFAULT_MODEL="%s"\n' "$layout" "$model"
+        # systemd's environment generator rejects empty values, even quoted.
+        if [[ -n $variant ]]; then printf 'XKB_DEFAULT_VARIANT="%s"\n' "$variant"; fi
+        if [[ -n $options ]]; then printf 'XKB_DEFAULT_OPTIONS="%s"\n' "$options"; fi
+    } > "$destination"
 }
 
 network_preflight() {
@@ -382,8 +385,6 @@ done
 date -u
 NETWORK_DIR=$(mktemp -d /root/hyprcachy-network.XXXXXX)
 network_preflight "$NETWORK_DIR"
-cp /etc/pacman.conf "$NETWORK_DIR/pacman.conf"
-configure_downloads "$NETWORK_DIR/pacman.conf"
 
 stage 'Installation choices'
 KEYBOARD=$(select_keyboard)
@@ -537,30 +538,29 @@ mount -o subvol=@home,$MOUNT_OPTS "$ROOT_PART" /mnt/home
 mount -o subvol=@log,$MOUNT_OPTS "$ROOT_PART" /mnt/var/log
 mount -o subvol=@pkg,$MOUNT_OPTS "$ROOT_PART" /mnt/var/cache/pacman/pkg
 mount -o subvol=@snapshots,$MOUNT_OPTS "$ROOT_PART" /mnt/.snapshots
-mount "$EFI_PART" /mnt/boot
+mount -o umask=0077 "$EFI_PART" /mnt/boot
 TARGET_LOG_READY=1
 
 # --- 5. TARGET BOOTSTRAP & CACHYOS REPOSITORIES ---
 stage 'Installing Arch base packages'
-pacstrap -C "$NETWORK_DIR/pacman.conf" -K /mnt base linux-firmware btrfs-progs snapper snap-pac limine \
+pacstrap -K /mnt base linux-firmware btrfs-progs snapper snap-pac limine \
     networkmanager sudo efibootmgr zsh
 
 genfstab -U /mnt >> /mnt/etc/fstab
-configure_downloads /mnt/etc/pacman.conf
 
 # Set console input before kernel hooks build the initramfs. UWSM's user
 # services inherit these standard XKB variables via systemd environment.d.
 printf 'KEYMAP=%s\n' "$KEYMAP" > /mnt/etc/vconsole.conf
 install -dm 0755 /mnt/etc/environment.d
-printf 'XKB_DEFAULT_LAYOUT=%s\nXKB_DEFAULT_MODEL=%s\nXKB_DEFAULT_VARIANT=%s\nXKB_DEFAULT_OPTIONS=%s\n' \
-    "$XKB_LAYOUT" "$XKB_MODEL" "$XKB_VARIANT" "$XKB_OPTIONS" > /mnt/etc/environment.d/60-keyboard.conf
+write_keyboard_environment /mnt/etc/environment.d/60-keyboard.conf \
+    "$XKB_LAYOUT" "$XKB_MODEL" "$XKB_VARIANT" "$XKB_OPTIONS"
 
 # Run the official repository setup against the disk-backed target, never the live ISO.
 stage 'Configuring CachyOS repositories and signing keys'
 cp -a -- "$NETWORK_DIR/cachyos-repo" /mnt/root/
 cp -- "$NETWORK_DIR/cachyos-key.asc" /mnt/root/cachyos-key.asc
 arch-chroot /mnt /usr/bin/bash -c \
-    'cd /root/cachyos-repo && ./cachyos-repo.sh --install' < <(yes)
+    'cd /root/cachyos-repo && ./cachyos-repo.sh --install' < <(yes || [[ $? == 141 ]])
 rm -rf /mnt/root/cachyos-repo /mnt/root/cachyos-key.asc
 
 stage 'Installing CachyOS kernel and boot integration'
