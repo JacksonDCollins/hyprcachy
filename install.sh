@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set +x # Never trace password entry or the chpasswd pipe, even under bash -x.
+set -Eeuo pipefail
 
 die() {
     echo "Error: $*" >&2
@@ -233,29 +234,135 @@ new_partition_device() {
     printf '%s\n' "$result"
 }
 
-# Sourcing exposes only the planning helpers; it never starts an installation.
+# Retry transfers, not package transactions or the entire repository setup.
+download_file() {
+    local url=$1 destination=$2
+    shift 2
+    curl --proto '=https' --fail --location --show-error --remove-on-error \
+        --retry 3 --retry-all-errors --retry-delay 2 --retry-max-time 120 \
+        --connect-timeout 15 --max-time 60 "$@" --output "$destination" -- "$url"
+}
+
+configure_downloads() {
+    local command="XferCommand = /usr/bin/curl --fail --location --show-error --retry 3 --retry-all-errors --retry-delay 2 --retry-max-time 300 --connect-timeout 15 --max-time 300 --output '%o' -- '%u'"
+    grep -qx '\[options\]' "$1" || die "Missing pacman options section: $1"
+    sed -i -e '/^[[:space:]]*XferCommand[[:space:]]*=/d' \
+        -e "/^\[options\]$/a $command" "$1"
+}
+
+network_preflight() {
+    # Trust anchor: CachyOS/CachyOS-PKGBUILDS, cachyos-keyring/cachyos-trusted.
+    # Key rotation requires a reviewed update, never discovery from a keyserver.
+    local directory=$1 fingerprint=882DCFE48E2051D48E2562ABF3B607488DB35A47
+    download_file https://mirror.cachyos.org/cachyos-repo.tar.xz "$directory/cachyos-repo.tar.xz"
+    tar -xf "$directory/cachyos-repo.tar.xz" -C "$directory"
+    local script="$directory/cachyos-repo/cachyos-repo.sh"
+    bash -n "$script"
+    # Fetch over HTTPS (443), not HKP (11371). Require exactly one primary key
+    # with the pinned fingerprint; a matching key ID or subkey is insufficient.
+    download_file "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x$fingerprint" "$directory/cachyos-key.asc"
+    install -dm 0700 "$directory/gnupg"
+    gpg --homedir "$directory/gnupg" --batch --with-colons --show-keys "$directory/cachyos-key.asc" \
+        | awk -F: -v expected="$fingerprint" '
+            $1 == "pub" {primaries++; primary_fingerprint=1; next}
+            $1 == "sub" {primary_fingerprint=0}
+            $1 == "fpr" && primary_fingerprint {actual=$10; primary_fingerprint=0}
+            END {exit !(primaries == 1 && actual == expected)}'
+    # Match command tokens, not indentation, quoting or the keyserver hostname.
+    # Unknown identities/command shapes still fail closed before disk writes.
+    if ! awk -v expected="$fingerprint" '
+        $1 == "pacman-key" && ($2 == "--recv-keys" || $2 == "--lsign-key") {
+            key=$3; gsub(/["\047]/, "", key); key=toupper(key); sub(/^0X/, "", key)
+            if (key != expected && key != substr(expected, length(expected)-15)) bad=1
+            if ($2 == "--recv-keys") {
+                received++
+                if (NF > 3 && $4 != "--keyserver" && $4 !~ /^#/) bad=1
+                if ($4 == "--keyserver" && (NF < 5 || (NF > 5 && $6 !~ /^#/))) bad=1
+                print "    pacman-key --add /root/cachyos-key.asc"
+            } else {
+                signed++
+                if (NF > 3 && $4 !~ /^#/) bad=1
+                print "    pacman-key --lsign-key " expected
+            }
+            next
+        }
+        {print}
+        END {exit (bad || received != 1 || signed != 1)}' "$script" > "$script.cached-key"; then
+        die "CachyOS key bootstrap changed; review its key identity/commands before installing."
+    fi
+    chmod --reference="$script" "$script.cached-key"
+    mv -- "$script.cached-key" "$script"
+    bash -n "$script"
+    download_file https://mirror.cachyos.org/repo/x86_64/cachyos/cachyos.db "$directory/repository.headers" --head
+    echo 'CachyOS archive, signing key and repository are reachable; no target disks changed.'
+}
+
+start_log() {
+    INSTALL_LOG=$1
+    exec 3>&1 4>&2
+    exec > >(tee -a "$INSTALL_LOG") 2>&1
+    LOG_PID=$!
+}
+
+finish_log() {
+    # Drain tee before copying, so the final error is included in the saved log.
+    exec 1>&3 2>&4 3>&- 4>&-
+    wait "$LOG_PID" || return
+    if [[ -n ${1:-} ]]; then
+        install -Dm 0600 "$INSTALL_LOG" "$1"
+    fi
+}
+
+stage() {
+    STAGE=$*
+    printf '\n=== %s ===\n' "$STAGE"
+}
+
+# Sourcing exposes helpers only; it never starts an installation.
 [[ ${BASH_SOURCE[0]} == "$0" ]] || return 0
 export LC_ALL=C
 
 # Clone/download both scripts together; fail before touching disks if setup is missing.
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 [[ -r "$SCRIPT_DIR/setup.sh" ]] || { echo "setup.sh must be beside install.sh" >&2; exit 1; }
-MOUNTED_TARGET=0
-PLAN_DIR=""
-
-cleanup() {
-    if (( MOUNTED_TARGET )); then
-        umount -R /mnt 2>/dev/null || true
-    fi
-    [[ -z $PLAN_DIR ]] || rm -rf -- "$PLAN_DIR"
-}
-trap cleanup EXIT
-
 (( EUID == 0 )) || die "Run this installer as root."
 [[ -d /sys/firmware/efi/efivars ]] || die "This installer requires a UEFI boot."
 if findmnt -rn -R /mnt >/dev/null; then
     die "/mnt already contains mounts; unmount them before continuing."
 fi
+MOUNTED_TARGET=0
+TARGET_LOG_READY=0
+PLAN_DIR=""
+NETWORK_DIR=""
+STAGE=initialization
+start_log "$(mktemp /root/hyprcachy-install.XXXXXX.log)"
+
+cleanup() {
+    local status=$? destination=""
+    trap - ERR
+    set +e
+    if (( status )); then
+        printf '\nFAILED: %s (exit %s). Do not rerun the installer blindly.\n' "$STAGE" "$status"
+    fi
+    echo "Live log: $INSTALL_LOG (copy elsewhere before reboot)."
+    if (( TARGET_LOG_READY )); then
+        destination=/mnt/var/log/hyprcachy-install.log
+        echo 'Persistent log: HyprCachy @log/hyprcachy-install.log'
+        if [[ -n ${BACKUP_DIR:-} ]]; then
+            install -dm 0700 /mnt/root
+            cp -a -- "$BACKUP_DIR" /mnt/root/ || { echo 'Could not preserve partition backups.' >&2; status=1; }
+        fi
+    fi
+    finish_log "$destination" || { echo 'Could not save the complete installation log.' >&2; status=1; }
+    if (( MOUNTED_TARGET )); then
+        umount -R /mnt || { echo 'Target unmount failed; inspect mounts before reboot.' >&2; status=1; }
+    fi
+    [[ -z $PLAN_DIR ]] || rm -rf -- "$PLAN_DIR"
+    [[ -z $NETWORK_DIR ]] || rm -rf -- "$NETWORK_DIR"
+    exit "$status"
+}
+trap cleanup EXIT
+trap 'printf "Error during %s at installer line %s (exit %s).\n" "$STAGE" "$LINENO" "$?" >&2' ERR
 
 # Archiso may launch script= before its other startup services finish.
 systemctl is-system-running --wait >/dev/null || true
@@ -264,6 +371,21 @@ echo "======================================================"
 echo "   CACHYOS MINIMAL: BTRFS + SNAPPER + LIMINE          "
 echo "======================================================"
 
+stage 'Clock synchronization and network preflight (before disk writes)'
+timedatectl set-ntp true
+for (( attempt=0; attempt<30; attempt++ )); do
+    [[ $(timedatectl show -p NTPSynchronized --value) == yes ]] && break
+    sleep 2
+done
+[[ $(timedatectl show -p NTPSynchronized --value) == yes ]] \
+    || die "Clock is not synchronized. Fix live-USB internet/time synchronization and rerun."
+date -u
+NETWORK_DIR=$(mktemp -d /root/hyprcachy-network.XXXXXX)
+network_preflight "$NETWORK_DIR"
+cp /etc/pacman.conf "$NETWORK_DIR/pacman.conf"
+configure_downloads "$NETWORK_DIR/pacman.conf"
+
+stage 'Installation choices'
 KEYBOARD=$(select_keyboard)
 read -r KEYMAP XKB_LAYOUT XKB_MODEL XKB_VARIANT XKB_OPTIONS _ <<< "$KEYBOARD"
 if [[ $XKB_VARIANT == - ]]; then XKB_VARIANT=""; fi
@@ -361,7 +483,7 @@ unset CONFIRM_PASSWORD
 confirm_installation
 
 # --- 3. DISK PARTITIONING ---
-timedatectl set-ntp true
+stage 'Partitioning the confirmed target'
 assert_disk_idle
 if [[ $INSTALL_MODE == 1 ]]; then
     BACKUP_DIR=$(mktemp -d /root/hyprcachy-partitions.XXXXXX)
@@ -390,7 +512,7 @@ fi
 
 # --- 4. BTRFS & SUBVOLUME CREATION ---
 assert_disk_idle
-echo "Formatting filesystems (Btrfs)..."
+stage 'Formatting only the selected new filesystems'
 mkfs.vfat -F32 "$EFI_PART"
 mkfs.btrfs -f "$ROOT_PART"
 
@@ -416,13 +538,15 @@ mount -o subvol=@log,$MOUNT_OPTS "$ROOT_PART" /mnt/var/log
 mount -o subvol=@pkg,$MOUNT_OPTS "$ROOT_PART" /mnt/var/cache/pacman/pkg
 mount -o subvol=@snapshots,$MOUNT_OPTS "$ROOT_PART" /mnt/.snapshots
 mount "$EFI_PART" /mnt/boot
+TARGET_LOG_READY=1
 
 # --- 5. TARGET BOOTSTRAP & CACHYOS REPOSITORIES ---
-echo "Pacstrapping the Arch base into the target..."
-pacstrap -K /mnt base linux-firmware btrfs-progs snapper snap-pac limine \
+stage 'Installing Arch base packages'
+pacstrap -C "$NETWORK_DIR/pacman.conf" -K /mnt base linux-firmware btrfs-progs snapper snap-pac limine \
     networkmanager sudo efibootmgr zsh
 
 genfstab -U /mnt >> /mnt/etc/fstab
+configure_downloads /mnt/etc/pacman.conf
 
 # Set console input before kernel hooks build the initramfs. UWSM's user
 # services inherit these standard XKB variables via systemd environment.d.
@@ -432,15 +556,14 @@ printf 'XKB_DEFAULT_LAYOUT=%s\nXKB_DEFAULT_MODEL=%s\nXKB_DEFAULT_VARIANT=%s\nXKB
     "$XKB_LAYOUT" "$XKB_MODEL" "$XKB_VARIANT" "$XKB_OPTIONS" > /mnt/etc/environment.d/60-keyboard.conf
 
 # Run the official repository setup against the disk-backed target, never the live ISO.
-echo "Configuring CachyOS repositories in the target..."
-curl -fL https://mirror.cachyos.org/cachyos-repo.tar.xz \
-    -o /mnt/root/cachyos-repo.tar.xz
-tar -xf /mnt/root/cachyos-repo.tar.xz -C /mnt/root
+stage 'Configuring CachyOS repositories and signing keys'
+cp -a -- "$NETWORK_DIR/cachyos-repo" /mnt/root/
+cp -- "$NETWORK_DIR/cachyos-key.asc" /mnt/root/cachyos-key.asc
 arch-chroot /mnt /usr/bin/bash -c \
     'cd /root/cachyos-repo && ./cachyos-repo.sh --install' < <(yes)
-rm -rf /mnt/root/cachyos-repo /mnt/root/cachyos-repo.tar.xz
+rm -rf /mnt/root/cachyos-repo /mnt/root/cachyos-key.asc
 
-echo "Installing CachyOS kernel and boot integration into the target..."
+stage 'Installing CachyOS kernel and boot integration'
 arch-chroot /mnt pacman --noconfirm -S --needed \
     linux-cachyos limine-mkinitcpio-hook limine-snapper-sync
 
@@ -452,7 +575,7 @@ umount /mnt/.snapshots
 rmdir /mnt/.snapshots
 
 # --- 6. TARGET SYSTEM CHROOT SETUP ---
-echo "Configuring target system environment..."
+stage 'Configuring accounts, locale, Snapper and Limine'
 arch-chroot /mnt /usr/bin/bash -s -- "$HOSTNAME" "$NEW_USER" "$ROOT_UUID" "$TIMEZONE" "$SYSTEM_LOCALE" <<'EOF'
 set -euo pipefail
 
@@ -519,6 +642,7 @@ printf 'root:%s\n%s:%s\n' "$ROOT_PASSWORD" "$NEW_USER" "$USER_PASSWORD" | arch-c
 unset ROOT_PASSWORD USER_PASSWORD
 
 # --- 9. REPEATABLE SYSTEM AND USER SETUP ---
+stage 'Installing graphics, desktop and user dotfiles'
 install -m 0700 "$SCRIPT_DIR/setup.sh" /mnt/root/hyprcachy-setup.sh
 arch-chroot /mnt /usr/bin/bash /root/hyprcachy-setup.sh "$NEW_USER"
 rm /mnt/root/hyprcachy-setup.sh

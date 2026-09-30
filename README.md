@@ -29,7 +29,27 @@ bash install.sh
 ```
 
 Alternatively clone this repository and run `bash install.sh` from it.
-The installer starts with searchable, numbered choices for:
+Local installer changes must be published before the GitHub download/automatic
+boot commands can use them; alternatively copy both updated scripts to the USB.
+
+Before any target-disk writes, the installer waits up to one minute for NTP clock
+synchronization, downloads/caches the CachyOS repository bootstrap, fetches and
+checks its signing key over HTTPS (port 443, avoiding blocked HKP port 11371), and
+checks that the CachyOS repository responds. A failure aborts without partitioning.
+The official bootstrap imports this cached public key; its key signing and package
+signature checks remain enabled. Exactly one primary key must match the pinned full
+fingerprint `882DCFE48E2051D48E2562ABF3B607488DB35A47`, verified against CachyOS's
+[official trusted-key list](https://github.com/CachyOS/CachyOS-PKGBUILDS/blob/master/cachyos-keyring/cachyos-trusted).
+Matching only the key ID or a subkey is not enough. Bootstrap whitespace, quoting,
+and keyserver-host changes are tolerated; changed key identities or unsupported
+key commands abort before disk writes. Key rotation needs a reviewed pin update.
+
+Transfers retry up to three times with connection/transfer deadlines. Pacman uses
+an external curl downloader with retries in both the live bootstrap configuration
+and the installed system; whole package transactions and setup scripts are **not**
+automatically rerun. Successful checks do not guarantee later servers stay online.
+
+The installer then presents searchable, numbered choices for:
 
 - **Keyboard:** available console-to-XKB mappings supplied by systemd (search
   `us`, `uk`, `de`, etc.). It applies the console keymap with `loadkeys` and asks
@@ -78,8 +98,18 @@ There is no automatic shrinking, moving, GPT repair or conversion. Back up your
 important data first, fully shut down the existing OS (not hibernation/Fast Startup),
 and keep any BitLocker recovery key available. Do not run other partitioning tools
 concurrently. GPT backups/logs are saved under `/root/hyprcachy-partitions.*` on the
-live system; copy them elsewhere before reboot. These are **not data backups** or
-an automatic rollback; failed installations can leave newly created partitions.
+live system and copied to the new system's `/root/` once its filesystems are mounted;
+copy them to another drive before reboot. These are **not data backups** or an
+automatic rollback; failed installations can leave newly created partitions.
+
+Output and errors are logged to `/root/hyprcachy-install.*.log` on the live system.
+At exit, once the new filesystems are mounted, the complete log is saved as
+`/var/log/hyprcachy-install.log` in the target (`@log` subvolume), including the
+failed stage and exit status. Logs are root-only; shell tracing is disabled so
+password-bearing commands are not traced. Failures before mounting only have the
+live log: copy it elsewhere **before reboot**. To inspect a persistent log from
+another OS, mount the new Btrfs **`@log`** subvolume read-only, not just `@`.
+Do not rerun `install.sh` blindly after a disk-changing failure.
 
 Hyprcachy uses its **own EFI partition**, not the existing OS's bootloader files.
 Limine registers a new firmware boot entry and **may become the default**; existing
@@ -204,9 +234,18 @@ proof of a problem. Test suspend/resume and external displays on the actual mach
 ## Non-destructive checks
 
 ```bash
-for script in boot.sh install.sh setup.sh; do bash -n "$script" || exit; done
+for script in boot.sh install.sh setup.sh check-network.sh; do bash -n "$script" || exit; done
+(set -o pipefail; bash check-network.sh | tee hyprcachy-network-check.log)
 bash setup.sh --hardware-report
 ```
+
+`check-network.sh` uses mocked network commands and a real disposable sparse GPT
+image to verify failed preflights stop before disk writes, signature settings stay
+intact, logs persist privately, and existing partition metadata/data is preserved.
+It requires Bash, Python, GnuPG and util-linux; it never accesses physical disks or
+installs packages. Its PASS output in `hyprcachy-network-check.log` is the repeatable
+verification artifact. A real network preflight was also checked from the host;
+the actual live USB environment still needs its own connectivity check.
 
 Driver setup is validated with temporary mocked commands, without running real
 package transactions. Full install, NVIDIA first boot, suspend/resume, and hybrid
