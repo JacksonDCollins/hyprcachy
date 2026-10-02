@@ -15,6 +15,13 @@ No dotfiles script is executed as root.
 
 Publish the dotfiles dependency list before publishing this Hyprcachy integration.
 
+Setup installs `zram-generator` and, unless local zram configuration already exists,
+configures `/dev/zram0` with zstd compression and a logical swap size of half RAM
+(priority 100). Memory is allocated as used, not reserved upfront. Swap starts
+immediately on an existing system or at first boot after installation. Existing
+local zram configuration and disk-backed swap are left untouched. Zram does not
+provide hibernation; that requires separately configured disk-backed swap.
+
 ## Fresh installation — partitioning required
 
 Boot a current Arch ISO in UEFI mode. Download **both** scripts together before
