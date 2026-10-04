@@ -2,6 +2,7 @@
 #include <charconv>
 #include <cmath>
 #include <functional>
+#include <format>
 #include <memory>
 #include <set>
 #include <sstream>
@@ -52,6 +53,11 @@ inline std::unique_ptr<Node> parse(const std::string& text) {
     std::string extra;
     require(!(input >> extra), "Trailing tree data");
     return root;
+}
+inline std::string serialize(const Node& node) {
+    if (!node.leaf.empty()) return "L" + node.leaf;
+    return std::format("{}{:.9g} {} {}", node.vertical ? 'V' : 'H', node.ratio,
+                       serialize(*node.first), serialize(*node.second));
 }
 // Missing applications collapse their branch; surviving siblings keep their own
 // subtree. Extra live windows are checked separately before any compositor write.

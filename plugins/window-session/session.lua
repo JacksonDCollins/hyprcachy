@@ -1,6 +1,6 @@
 -- Hyprcachy-owned controller, configured through hl.plugin.window_session.config.
-local M = { status = "not started" }
-local header = "hyprcachy-window-session-v6\n"
+local M = { status = "not started", restoring = false, fullscreen_layouts = {} }
+local header = "hyprcachy-window-session-v7\n"
 local function quote(s)
 	assert(type(s) == "string" and not s:find("\0", 1, true), "Invalid command argument")
 	return "'" .. s:gsub("'", "'\\''") .. "'"
@@ -116,6 +116,123 @@ function M.snapshot(windows, ignored)
 	table.sort(ids)
 	return records, table.concat(ids, ","), slots
 end
+local function return_tag(tags, origin)
+	local prefix, found = "dotfiles-fullscreen-return:", false
+	for _, tag in ipairs(tags or {}) do
+		if tag:sub(1, #prefix) == prefix then
+			local workspace, monitor = tag:sub(#prefix + 1):match("^([0-9a-f]+):([0-9a-f]+)$")
+			if found or workspace ~= hex(origin) or not monitor or #monitor % 2 ~= 0
+				or unhex(monitor):find("\0", 1, true) then return false end
+			found = true
+		end
+	end
+	return found
+end
+local function validate_fullscreen(origin, layout, records, trees)
+	assert(not origin:find("\0", 1, true) and ((origin:match("^%d+$") and tonumber(origin) > 0)
+		or origin:match("^name:.+")), "Invalid fullscreen origin")
+	assert(hl.plugin.window_session.validate(layout.tree))
+	if layout.expected ~= "" then assert(hl.plugin.window_session.validate(layout.expected)) end
+	assert(layout.expected == (trees[origin] or ""), "Fullscreen baseline differs from saved workspace")
+	assert(next(layout.away), "Missing fullscreen away windows")
+	local leaves, home = {}, {}
+	for slot in layout.tree:gmatch("L(%d+)") do
+		local record = records[tonumber(slot)]
+		assert(record and tostring(tonumber(slot)) == slot and not record.floating and not record.pinned
+			and not record.tiled_fallback and not leaves[slot], "Invalid fullscreen tree binding")
+		if layout.away[slot] then
+			assert(record.workspace ~= origin and (record.fullscreen & 2) ~= 0
+				and record.ext and return_tag(record.ext.tags, origin), "Invalid fullscreen away binding")
+		else
+			assert(record.workspace == origin, "Invalid fullscreen home binding")
+			home[slot] = true
+		end
+		leaves[slot] = true
+	end
+	for slot, value in pairs(layout.away) do
+		assert(leaves[slot] and value == true, "Unknown fullscreen away slot")
+	end
+	for slot in layout.expected:gmatch("L(%d+)") do
+		assert(home[slot], "Invalid fullscreen remaining tree")
+		home[slot] = nil
+	end
+	assert(not next(home), "Incomplete fullscreen remaining tree")
+end
+local function validate_fullscreens(fullscreen, records, trees)
+	local members = {}
+	for origin, layout in pairs(fullscreen) do
+		validate_fullscreen(origin, layout, records, trees)
+		for slot in layout.tree:gmatch("L(%d+)") do
+			assert(not members[slot], "Window belongs to multiple fullscreen baselines")
+			members[slot] = true
+		end
+	end
+end
+function M.fullscreen_tree(origin)
+	local workspace = hl.get_workspace(origin)
+	if not workspace or #hl.get_windows({ workspace = workspace, mapped = true, floating = false }) == 0 then
+		return ""
+	end
+	return hl.plugin.window_session.capture(workspace.id)
+end
+function M.capture_fullscreen(records, slots, trees, windows)
+	local saved, live = {}, {}
+	for _, window in ipairs(windows) do live[tostring(window.stable_id)] = true end
+	for origin, layout in pairs(M.fullscreen_layouts) do
+		if layout.tree and M.fullscreen_tree(origin) ~= layout.expected then layout.tree = nil end
+		if layout.tree then
+			local complete = true
+			for id in layout.tree:gmatch("L(%d+)") do
+				if live[id] and not slots[id] then complete = false end -- Never silently drop ignored live members.
+			end
+			if complete then
+				local candidate = {
+					tree = assert(hl.plugin.window_session.remap(layout.tree, slots)),
+					expected = layout.expected == "" and "" or assert(hl.plugin.window_session.remap(layout.expected, slots)),
+					away = {},
+				}
+				for id in pairs(layout.away) do
+					if slots[id] then candidate.away[slots[id]] = true end
+				end
+				-- Pending exits/ignored members cannot form a restorable baseline; ordinary state still saves.
+				if pcall(validate_fullscreen, origin, candidate, records, trees) then saved[origin] = candidate end
+			end
+		end
+	end
+	if not pcall(validate_fullscreens, saved, records, trees) then return {} end
+	return saved
+end
+function M.restore_fullscreen(saved, bindings, live)
+	M.fullscreen_layouts = {}
+	local failed = {}
+	for origin, layout in pairs(saved) do
+		local complete, away = true, {}
+		for slot in layout.tree:gmatch("L(%d+)") do
+			local id = bindings[slot]
+			local window = id and live[id]
+			if not window or not window.mapped or window.hidden or window.floating or window.group
+				or window.pinned or window.pin_fullscreened or not window.workspace or window.workspace.special then
+				complete = false
+			elseif layout.away[slot] then
+				if window.workspace.config_name == origin or (window.fullscreen & 2) == 0
+					or not return_tag(window.tags, origin) then complete = false end
+				away[id] = true
+			elseif window.workspace.config_name ~= origin then
+				complete = false
+			end
+		end
+		if complete then
+			local expected = layout.expected == "" and "" or assert(hl.plugin.window_session.remap(layout.expected, bindings))
+			if M.fullscreen_tree(origin) == expected then
+				M.fullscreen_layouts[origin] = {
+					tree = assert(hl.plugin.window_session.remap(layout.tree, bindings)), expected = expected, away = away,
+				}
+			else complete = false end
+		end
+		if not complete then failed[#failed + 1] = origin end
+	end
+	return failed
+end
 function M.capture(ignored, launch, desktops)
 	local windows = hl.get_windows()
 	local records, topology, slots = M.snapshot(windows, ignored)
@@ -166,9 +283,10 @@ function M.capture(ignored, launch, desktops)
 			end
 		end
 	end
-	return records, topology, trees, windows
+	return records, topology, trees, windows, M.capture_fullscreen(records, slots, trees, windows)
 end
-function M.encode(records, trees)
+function M.encode(records, trees, fullscreen)
+	validate_fullscreens(fullscreen or {}, records, trees or {})
 	local lines = { header }
 	for slot, r in ipairs(records) do
 		lines[#lines + 1] = table.concat({
@@ -204,19 +322,30 @@ function M.encode(records, trees)
 	for _, name in ipairs(names) do
 		lines[#lines + 1] = "T\t" .. hex(name) .. "\t" .. trees[name] .. "\n"
 	end
+	names = {}
+	for origin in pairs(fullscreen or {}) do names[#names + 1] = origin end
+	table.sort(names)
+	for _, origin in ipairs(names) do
+		local layout, away = fullscreen[origin], {}
+		for slot in pairs(layout.away) do away[#away + 1] = slot end
+		table.sort(away)
+		lines[#lines + 1] = table.concat({
+			"F", hex(origin), layout.tree, layout.expected, table.concat(away, ","),
+		}, "\t") .. "\n"
+	end
 	local text = table.concat(lines)
 	assert(#text <= 524288, "Session snapshot exceeds size limit")
 	return text
 end
 function M.decode(text)
 	if text == nil then
-		return {}, {}
+		return {}, {}, {}
 	end
 	assert(
 		text:sub(1, #header) == header,
 		"Incompatible session snapshot; leaving it untouched. Start with a fresh snapshot."
 	)
-	local records, trees = {}, {}
+	local records, trees, fullscreen = {}, {}, {}
 	for line in text:sub(#header + 1):gmatch("[^\n]+") do
 		local f = {}
 		for field in (line .. "\t"):gmatch("([^\t]*)\t") do
@@ -238,6 +367,15 @@ function M.decode(text)
 			assert(record and not record.state, "Duplicate/unknown state window")
 			record.state = unhex(f[3])
 			record.ext = assert(hl.plugin.window_session.inspect_state(record.state))
+		elseif f[1] == "F" then
+			assert(#f == 5 and #f[3] <= 32768 and #f[4] <= 32768, "Invalid fullscreen layout record")
+			local origin, away = unhex(f[2]), {}
+			assert(not fullscreen[origin], "Duplicate fullscreen origin")
+			for slot in (f[5] .. ","):gmatch("([^,]*),") do
+				assert(slot:match("^[1-9]%d*$") and not away[slot], "Invalid fullscreen away slot")
+				away[slot] = true
+			end
+			fullscreen[origin] = { tree = f[3], expected = f[4], away = away }
 		elseif f[1] == "T" then
 			assert(#f == 3 and #f[3] <= 32768 and not f[3]:find("[^LHV0-9.e+%- ]"), "Invalid saved tree")
 			local name = unhex(f[2])
@@ -303,7 +441,8 @@ function M.decode(text)
 			record.floating, record.pinned, record.tiled_fallback = false, false, true
 		end
 	end
-	return records, trees
+	validate_fullscreens(fullscreen, records, trees)
+	return records, trees, fullscreen
 end
 function M.pair(records, windows, used, fallback)
 	local pairs, matched = {}, {}
@@ -511,7 +650,7 @@ function M.configure(options)
 	if options.enabled ~= true then
 		return
 	end
-	M.status = "pending startup"
+	M.status, M.restoring = "pending startup", true
 	-- Finish processing all user configuration before starting the controller.
 	hl.timer(function()
 		local ok, message = pcall(M.start, options)
@@ -535,6 +674,7 @@ function M.start(options)
 	assert(
 		type(hl.plugin.window_session.prepare_dir) == "function"
 			and type(hl.plugin.window_session.archive_snapshot) == "function"
+			and type(hl.plugin.window_session.remap) == "function"
 			and type(hl.plugin.window_session.desktop_files) == "function"
 			and type(hl.plugin.window_session.process_command) == "function"
 			and type(hl.plugin.window_session.capture_state) == "function"
@@ -588,7 +728,7 @@ function M.start(options)
 		end
 	end
 	local function begin_restore(text, manual)
-		local records, layout = M.decode(text)
+		local records, layout, fullscreen = M.decode(text)
 		for _, tree in pairs(layout) do
 			local valid, err = hl.plugin.window_session.validate(tree)
 			assert(valid, err)
@@ -599,6 +739,9 @@ function M.start(options)
 				pending[#pending + 1] = record
 			end
 		end
+		M.restoring = true -- Window rules must not relocate windows while replay owns placement.
+		M.fullscreen_layouts = {}
+		c.fullscreen, c.records, c.reloading = fullscreen, pending, false
 		c.total, c.issues, c.reported = #pending, {}, false
 		for _, record in ipairs(pending) do
 			if record.tiled_fallback then
@@ -627,7 +770,7 @@ function M.start(options)
 	end
 	begin_restore(saved)
 	if read(marker) then
-		c.pending, trees, c.total = {}, {}, 0
+		c.pending, trees, c.total, c.reloading = {}, {}, 0, true
 	else
 		if saved then
 			write(dir .. "/previous.tsv", saved)
@@ -641,12 +784,12 @@ function M.start(options)
 	end
 	function M.save()
 		assert(not c.cycling, "Session snapshot is protected: " .. M.status)
-		local current, _, layout = M.capture(ignored, launch, c.desktops)
-		write(file, M.encode(current, layout))
+		local current, _, layout, _, fullscreen = M.capture(ignored, launch, c.desktops)
+		write(file, M.encode(current, layout, fullscreen))
 	end
 	function M.cycle()
 		assert(c.finished and not c.stopping and not c.cycling, "Wait for recording before cycling: " .. M.status)
-		local current, _, layout, windows = M.capture(ignored, cycle_launch, c.desktops)
+		local current, _, layout, windows, fullscreen = M.capture(ignored, cycle_launch, c.desktops)
 		assert(#M.capture_errors == 0, "Cannot safely cycle: " .. table.concat(M.capture_errors, "; "))
 		for _, record in ipairs(current) do
 			assert(M.command(record.class, cycle_launch, c.desktops, record.command), "No launch recipe for " .. record.class)
@@ -659,7 +802,7 @@ function M.start(options)
 			end
 		end
 		assert(#actions > 0, "No session-managed windows to close")
-		local text = M.encode(current, layout)
+		local text = M.encode(current, layout, fullscreen)
 		-- Keep a separate recovery copy: config reloads and later recording cannot overwrite it.
 		write(cycle_file, text)
 		write(file, text)
@@ -825,7 +968,28 @@ function M.start(options)
 			for _, record in ipairs(c.pending) do
 				issue("missing: " .. record.class)
 			end
-			c.cycling = false
+			if c.reloading then
+				-- Recover checkpoint metadata without replaying placement or fullscreen on config reload.
+				local groups = {}
+				for _, record in ipairs(c.records) do
+					groups[record.workspace] = groups[record.workspace] or {}
+					table.insert(groups[record.workspace], record)
+				end
+				for name, records in pairs(groups) do
+					local windows = {}
+					for _, window in pairs(live) do
+						if eligible(window, ignored) and window.workspace.config_name == name then windows[#windows + 1] = window end
+					end
+					table.sort(windows, function(a, b) return a.stable_id < b.stable_id end)
+					local matched = M.pair(records, windows, {}, true)
+					for _, pair in ipairs(matched) do bindings[pair[1].slot] = tostring(pair[2].stable_id) end
+				end
+			end
+			for _, origin in ipairs(M.restore_fullscreen(c.fullscreen, bindings, live)) do
+				issue("fullscreen baseline skipped: " .. origin)
+				print("Window session: fullscreen baseline could not be verified: " .. origin)
+			end
+			c.cycling, M.restoring = false, false
 			if c.total > 0 then
 				local details = {}
 				for label, count in pairs(c.issues) do
@@ -842,11 +1006,11 @@ function M.start(options)
 		if c.seconds % 5 ~= 0 then
 			return
 		end
-		local current, topology, layout = M.capture(ignored, launch, c.desktops)
+		local current, topology, layout, _, fullscreen = M.capture(ignored, launch, c.desktops)
 		if topology ~= c.topology then
 			c.topology, c.changed = topology, c.seconds
 		end
-		local text = M.encode(current, layout)
+		local text = M.encode(current, layout, fullscreen)
 		-- ponytail: topology debounce, not an atomic logout snapshot. Explicit save supports empty desktops.
 		if #current > 0 and c.seconds - c.changed >= timing.stability_delay and text ~= c.last then
 			write(file, text)

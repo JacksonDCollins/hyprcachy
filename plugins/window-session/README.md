@@ -203,14 +203,47 @@ one-second controller tick; zero stability delay saves on the next five-second
 sample. `launch` and `ignore` default to empty tables; no other options are supported.
 Ignoring a tiled window prevents capturing that workspace's complete dwindle tree.
 
+`hyprcachy_window_session.restoring` is true during enabled startup, cycle close,
+and replay, including the final layout/fullscreen/stacking operations. It becomes
+false only after replay finishes (or stays true if replay stops on an error).
+Fullscreen workspace rules must check this signal at event receipt and before
+any deferred movement, so restored windows stay on their saved workspaces.
+Manual return-location tags are preserved by the native-state codec. The shared
+`hyprcachy_window_session.fullscreen_layouts` registry holds the rule's original
+trees, expected remaining trees and away-window membership.
+
 State is TSV in `$XDG_STATE_HOME/hyprcachy/window-session/` (default
 `~/.local/state/hyprcachy/window-session/`), inside a mode-0700 directory. Writes
 replace `current.tsv` atomically; `previous.tsv` retains the prior login snapshot.
-Only the current format (`hyprcachy-window-session-v6`) is accepted. The identifier
+Only the current format (`hyprcachy-window-session-v7`) is accepted. The identifier
 rejects incompatible data; there are no legacy readers or migrations. Native-state
 records have no separate version and are required for every saved window. A failed
 native-state capture prevents saving rather than overwriting a complete checkpoint
 with partial state. Missing launch commands or trees still have their own error reporting.
+
+`F` records store a fullscreen origin workspace, baseline tree, expected remaining
+tree (empty when no tiled windows remain), and away slots. Both trees use snapshot
+window slots, never compositor IDs. Native `remap` reuses the bounded tree parser,
+prunes closed leaves and rejects duplicate bindings without touching the desktop.
+The codec checks slot ownership, tiled state, away fullscreen/return tags, and
+agreement with the ordinary saved workspace tree. Invalid `F` records reject the
+snapshot, rather than execute or silently reinterpret it.
+
+Automatic checkpoints, `save()` and `cycle()` include valid fullscreen baselines.
+A changed/unverifiable live baseline is omitted; ignored live members are never
+silently pruned into a supposedly complete baseline. After replay finishes,
+window matches supply new stable IDs. A baseline is adopted only if every saved
+member matched, away tags/states still agree, and the remaining live tree equals
+the remapped expectation. Otherwise it is reported as skipped; returning windows
+still use normal placement. Config reloads can recover the last checkpoint's
+baselines by matching within workspaces and checking the live tree, without
+replaying moves/fullscreen. This inherits ordinary window-matching limitations.
+As with all session state, only completed checkpoints survive; use `save()` before
+an immediate logout if the latest change has not reached the periodic sample.
+
+Install/rebuild and restart Hyprland to load the native `remap` helper. Incompatible
+snapshots are archived as below; old in-memory baselines cannot be recovered after
+the first activation. Subsequent fullscreen round trips are persisted in v7.
 
 At controller startup, a `current.tsv` with a recognized snapshot header but a
 different format is renamed to a unique `current.tsv.incompatible-XXXXXX` in the

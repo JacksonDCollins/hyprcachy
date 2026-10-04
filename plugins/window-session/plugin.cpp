@@ -110,30 +110,45 @@ int capture(lua_State* L) {
     } catch (const std::exception& error) { return failure(L, error.what()); }
 }
 
+std::unique_ptr<SessionTree::Node> mappedTree(lua_State* L, int textIndex, int bindingsIndex) {
+    SessionTree::require(lua_type(L, textIndex) == LUA_TSTRING && lua_istable(L, bindingsIndex), "Expected tree string and bindings table");
+    size_t length = 0;
+    const char* text = lua_tolstring(L, textIndex, &length);
+    SessionTree::require(length <= 32768, "Tree exceeds size limit");
+    auto tree = SessionTree::parse(std::string(text, length));
+    tree = SessionTree::remap(std::move(tree), [L, bindingsIndex](const std::string& slot) {
+        lua_pushlstring(L, slot.data(), slot.size());
+        lua_rawget(L, bindingsIndex); // Never invoke user metatables from the parser.
+        std::string id;
+        if (!lua_isnil(L, -1)) {
+            if (lua_type(L, -1) != LUA_TSTRING) {
+                lua_pop(L, 1);
+                throw std::runtime_error("Bindings must be strings");
+            }
+            size_t size = 0;
+            const char* value = lua_tolstring(L, -1, &size);
+            if (size > 20) { lua_pop(L, 1); throw std::runtime_error("Invalid binding size"); }
+            id.assign(value, size);
+        }
+        lua_pop(L, 1);
+        return id;
+    });
+    if (tree) SessionTree::leafSet(*tree); // Reject duplicate mapped leaves in both APIs.
+    return tree;
+}
+
+int remap(lua_State* L) {
+    try {
+        const auto tree = mappedTree(L, 1, 2);
+        const auto text = tree ? SessionTree::serialize(*tree) : std::string{};
+        lua_pushlstring(L, text.data(), text.size());
+        return 1;
+    } catch (const std::exception& error) { return failure(L, error.what()); }
+}
+
 int restore(lua_State* L) {
     try {
-        SessionTree::require(lua_type(L, 2) == LUA_TSTRING && lua_istable(L, 3), "Expected tree string and bindings table");
-        size_t length = 0;
-        const char* text = lua_tolstring(L, 2, &length);
-        SessionTree::require(length <= 32768, "Tree exceeds size limit");
-        auto tree = SessionTree::parse(std::string(text, length));
-        tree = SessionTree::remap(std::move(tree), [L](const std::string& slot) {
-            lua_pushlstring(L, slot.data(), slot.size());
-            lua_rawget(L, 3); // Never invoke user metatables from the parser.
-            std::string id;
-            if (!lua_isnil(L, -1)) {
-                if (lua_type(L, -1) != LUA_TSTRING) {
-                    lua_pop(L, 1);
-                    throw std::runtime_error("Bindings must be strings");
-                }
-                size_t size = 0;
-                const char* value = lua_tolstring(L, -1, &size);
-                if (size > 20) { lua_pop(L, 1); throw std::runtime_error("Invalid binding size"); }
-                id.assign(value, size);
-            }
-            lua_pop(L, 1);
-            return id;
-        });
+        auto tree = mappedTree(L, 2, 3);
         SessionTree::require(bool(tree), "No saved windows remain");
         LiveTree live(L);
         const auto requested = SessionTree::leafSet(*tree);
@@ -194,6 +209,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
         || !HyprlandAPI::addLuaFunction(handle, "window_session", "capture", capture)
         || !HyprlandAPI::addLuaFunction(handle, "window_session", "restore", restore)
         || !HyprlandAPI::addLuaFunction(handle, "window_session", "validate", validate)
+        || !HyprlandAPI::addLuaFunction(handle, "window_session", "remap", remap)
         || !HyprlandAPI::addLuaFunction(handle, "window_session", "capture_state", SessionState::capture)
         || !HyprlandAPI::addLuaFunction(handle, "window_session", "inspect_state", SessionState::inspect)
         || !HyprlandAPI::addLuaFunction(handle, "window_session", "apply_state", SessionState::apply)

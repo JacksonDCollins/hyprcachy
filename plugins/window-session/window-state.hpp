@@ -206,6 +206,11 @@ inline int failure(lua_State* L, const char* error) { lua_pushnil(L); lua_pushst
 inline void info(lua_State* L, const State& s) {
     lua_newtable(L);
     lua_pushinteger(L, s.z); lua_setfield(L, -2, "z");
+    lua_newtable(L);
+    for (size_t i = 0; i < s.tags.size(); ++i) {
+        lua_pushlstring(L, s.tags[i].data(), s.tags[i].size()); lua_rawseti(L, -2, i + 1);
+    }
+    lua_setfield(L, -2, "tags");
     if (s.normal) {
         lua_newtable(L);
         const double values[] = {s.normal->x, s.normal->y, s.normal->w, s.normal->h};
