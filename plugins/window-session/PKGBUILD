@@ -1,0 +1,45 @@
+# Local package: source checksums are not a substitute for reviewing this checkout.
+pkgname=hyprcachy-window-session
+pkgver=0.7.0
+pkgrel=1
+pkgdesc='Native dwindle session persistence with pre-transaction compilation checks'
+arch=('x86_64')
+license=() # The repository has not declared a license.
+depends=('hyprland' 'gcc-libs' 'gcc' 'make' 'pkgconf' 'systemd' 'btrfs-progs'
+         'pacman-contrib' 'util-linux' 'uwsm' 'coreutils>=9.5' 'procps-ng' 'libnotify')
+options=('!lto' '!debug')
+install=window-session.install
+source=('plugin.cpp' 'tree.hpp' 'filesystem.hpp' 'window-state.hpp' 'Makefile'
+        'session.lua' 'hyprcachy-window-session.desktop' 'gate-lib.sh' 'preflight' 'transaction-gate'
+        'candidate-check' 'cleanup' 'window-session.install'
+        'hyprcachy-window-session-cleanup.service' 'hyprcachy-window-session-cleanup.timer'
+        '00-window-session-incoming.hook' '01-window-session-check.hook'
+        '99-window-session-publish.hook' '99-window-session-refresh.hook' 'README.md')
+sha256sums=()
+for file in "${source[@]}"; do sha256sums+=('SKIP'); done
+
+build() {
+    make all
+}
+
+package() {
+    install -Dm644 build/window-session.so "$pkgdir/usr/lib/hyprcachy/window-session/window-session.so"
+    install -Dm644 README.md "$pkgdir/usr/share/doc/hyprcachy-window-session/README.md"
+    for file in transaction-gate preflight candidate-check gate-lib.sh cleanup; do
+        install -Dm755 "$file" "$pkgdir/usr/lib/hyprcachy/window-session/$file"
+    done
+    install -Dm644 session.lua "$pkgdir/usr/share/hyprcachy/window-session/session.lua"
+    install -Dm644 hyprcachy-window-session.desktop "$pkgdir/etc/xdg/autostart/hyprcachy-window-session.desktop"
+    for file in hyprcachy-window-session-cleanup.service hyprcachy-window-session-cleanup.timer; do
+        install -Dm644 "$file" "$pkgdir/usr/lib/systemd/system/$file"
+    done
+    install -d "$pkgdir/usr/lib/systemd/system/timers.target.wants"
+    ln -s ../hyprcachy-window-session-cleanup.timer "$pkgdir/usr/lib/systemd/system/timers.target.wants/hyprcachy-window-session-cleanup.timer"
+    # Only native build inputs are needed for incoming-package compilation.
+    for file in plugin.cpp tree.hpp filesystem.hpp window-state.hpp Makefile; do
+        install -Dm644 "$file" "$pkgdir/usr/src/hyprcachy-window-session/$file"
+    done
+    for file in ./*.hook; do
+        install -Dm644 "$file" "$pkgdir/usr/share/libalpm/hooks/${file##*/}"
+    done
+}

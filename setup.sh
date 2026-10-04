@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Repeatable setup for an existing Arch/CachyOS installation. Never formats disks.
 set -euo pipefail
+repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 
 # Removing a package here does not uninstall it from an existing system.
 PACKAGES=(
@@ -9,6 +10,7 @@ PACKAGES=(
     xdg-desktop-portal-hyprland xdg-desktop-portal-gtk hyprpolkitagent
     qt5-wayland qt6-wayland noto-fonts networkmanager bluez upower
     chwd pciutils linux-firmware zram-generator
+    btrfs-progs pacman-contrib
 )
 
 die() { echo "Error: $*" >&2; exit 1; }
@@ -80,7 +82,10 @@ if [[ -e /etc/systemd/system/display-manager.service ]] &&
 fi
 
 # Upgrade together with dependency installation; never perform a partial Arch upgrade.
-pacman -Syu --needed --noconfirm "${PACKAGES[@]}"
+install_packages() {
+    pacman -Syu --needed --noconfirm -- "$@"
+}
+install_packages "${PACKAGES[@]}"
 
 # Preserve existing local zram configuration. The generator activates swap at boot.
 if [[ ! -e /etc/systemd/zram-generator.conf && ! -L /etc/systemd/zram-generator.conf &&
@@ -155,7 +160,7 @@ mapfile -t dotfiles_packages < "$user_home/dotfiles/packages-arch.txt"
 for package in "${dotfiles_packages[@]}"; do
     [[ "$package" =~ ^[a-z0-9][a-z0-9@._+-]*$ ]] || die "Invalid dotfiles dependency package name."
 done
-pacman -Syu --needed --noconfirm -- "${dotfiles_packages[@]}"
+install_packages "${dotfiles_packages[@]}"
 
 # Configuration installation stays unprivileged, including machine selection.
 runuser -u "$user" -- env -u BASH_ENV -u ENV HOME="$user_home" USER="$user" LOGNAME="$user" /usr/bin/bash -c '
@@ -187,6 +192,32 @@ done
 (( valid )) || { echo "No valid profile selected; pass an available profile to setup.sh." >&2; exit 1; }
 bash ./setup.sh "$profile"
 ' -- "$profile"
+
+# Build our native plugin as the user, then install a tracked local pacman package.
+# Two-script ISO installs do not carry plugin sources, so fetch this same project's
+# published source as the user in that case. Never execute dotfiles scripts as root.
+plugin_build=$(mktemp -d /tmp/hyprcachy-plugin.XXXXXX)
+trap 'rm -rf -- "$plugin_build"' EXIT
+chown "$uid:$(id -g "$user")" "$plugin_build"
+if [[ -d "$repo_dir/plugins/window-session" ]]; then
+    cp -R -- "$repo_dir/plugins/window-session" "$plugin_build/source"
+    chown -R "$uid:$(id -g "$user")" "$plugin_build/source"
+    plugin_source="$plugin_build/source"
+else
+    runuser -u "$user" -- env -u BASH_ENV -u ENV HOME="$user_home" \
+        git clone --depth 1 --branch main https://github.com/JacksonDCollins/hyprcachy.git "$plugin_build/repo"
+    plugin_source="$plugin_build/repo/plugins/window-session"
+fi
+runuser -u "$user" -- env -u BASH_ENV -u ENV HOME="$user_home" USER="$user" LOGNAME="$user" \
+    /usr/bin/bash -c 'cd -- "$1" && exec makepkg --cleanbuild --force --nodeps --noconfirm' -- "$plugin_source"
+plugin_packages=()
+for package in "$plugin_source"/hyprcachy-window-session-*.pkg.tar.*; do
+    [[ -f "$package" && "$package" != *.sig ]] && plugin_packages+=("$package")
+done
+(( ${#plugin_packages[@]} == 1 )) || die 'Expected exactly one built window-session package.'
+pacman -U --noconfirm -- "${plugin_packages[0]}"
+rm -rf -- "$plugin_build"
+trap - EXIT
 
 # Replace only this owned system config; preserve each changed version first.
 workdir=$(mktemp -d)

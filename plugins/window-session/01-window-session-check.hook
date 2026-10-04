@@ -1,0 +1,13 @@
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Operation = Remove
+Type = Package
+Target = *
+
+[Action]
+Description = Compile window-session against incoming packages before committing
+When = PreTransaction
+Exec = /usr/lib/hyprcachy/window-session/transaction-gate pre
+NeedsTargets
+AbortOnFail

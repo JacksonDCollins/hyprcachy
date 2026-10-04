@@ -1,0 +1,17 @@
+# Pacman lifecycle: activate the packaged timer without touching the desktop.
+system_live() {
+    ! systemd-detect-virt --quiet --chroot && systemd-notify --booted
+}
+post_install() {
+    if system_live; then
+        systemctl daemon-reload && systemctl start hyprcachy-window-session-cleanup.timer
+    fi
+}
+post_upgrade() {
+    post_install
+}
+pre_remove() {
+    if system_live; then
+        systemctl stop hyprcachy-window-session-cleanup.timer hyprcachy-window-session-cleanup.service
+    fi
+}

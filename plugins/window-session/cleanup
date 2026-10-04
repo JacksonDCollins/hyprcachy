@@ -1,0 +1,62 @@
+#!/usr/bin/bash -p
+# Delete only expired, inactive preflight data; never walk a retained snapshot.
+set -euo pipefail
+export PATH=/usr/bin LC_ALL=C
+umask 077
+# shellcheck source=gate-lib.sh
+source /usr/lib/hyprcachy/window-session/gate-lib.sh
+lock_state -n || exit 0
+
+idle() {
+    [[ ! -e /var/lib/pacman/db.lck && ! -L /var/lib/pacman/db.lck ]] || return 1
+    local status
+    if pgrep -x 'pacman|systemd-nspawn' > /dev/null; then return 1; else status=$?; fi
+    # pgrep errors also defer cleanup, rather than being mistaken for no processes.
+    [[ $status == 1 ]]
+}
+idle || exit 0
+cutoff=$(( $(date +%s) - 7 * 24 * 60 * 60 ))
+for stage in /var/cache/hyprcachy-preflight.*; do
+    [[ $stage =~ ^/var/cache/hyprcachy-preflight\.[a-zA-Z0-9]{6}$ ]] || continue
+    [[ -d "$stage" && ! -L "$stage" && $(realpath -e -- "$stage") == "$stage" ]] || continue
+    [[ $(stat -c '%u:%a' -- "$stage") == 0:700 ]] || continue
+    (( $(stat -c %Y -- "$stage") < cutoff )) || continue
+    # A reused PID can postpone cleanup; that is safer than deleting a live context.
+    [[ -f "$stage/pid" && ! -L "$stage/pid" ]] || continue
+    pid=$(< "$stage/pid")
+    [[ $pid =~ ^[1-9][0-9]*$ && ! -e /proc/$pid ]] || continue
+    idle || exit 0
+
+    mounts=$(findmnt -rn -o TARGET)
+    mounted=false
+    while IFS= read -r target; do
+        if [[ $target == "$stage" || $target == "$stage/"* ]]; then mounted=true; break; fi
+    done <<< "$mounts"
+    if $mounted; then echo "Retaining mounted staging directory: $stage"; continue; fi
+    # Do not recurse into a replaced staging directory that is itself a subvolume.
+    if [[ $(stat -c %i -- "$stage") == 256 ]]; then
+        echo "Retaining unexpected staging subvolume: $stage"; continue
+    fi
+
+    root=$stage/root
+    if [[ -e "$root" || -L "$root" ]]; then
+        if [[ -L "$root" || ! -d "$root" ]] || ! btrfs subvolume show "$root" > /dev/null; then
+            echo "Retaining unexpected scratch root: $root"; continue
+        fi
+        children=$(btrfs subvolume list -o "$root")
+        if [[ -n "$children" ]]; then
+            echo "Retaining scratch root with nested subvolumes: $root"; continue
+        fi
+        idle || exit 0
+        btrfs subvolume delete --commit-after "$root" || continue
+    fi
+    # Unexpected additional Btrfs subvolumes need inspection, not recursive rm.
+    extra=$(find "$stage" -xdev -type d -inum 256 -prune -print -quit)
+    if [[ -n "$extra" ]]; then echo "Retaining unexpected subvolume: $extra"; continue; fi
+    idle || exit 0
+    rm -rf --one-file-system -- "$stage"
+    if [[ -f "$state/active" && ! -L "$state/active" && $(< "$state/active") == "$stage" ]]; then
+        rm -f -- "$state/active"
+    fi
+    echo "Removed expired preflight data: $stage"
+done

@@ -22,6 +22,35 @@ immediately on an existing system or at first boot after installation. Existing
 local zram configuration and disk-backed swap are left untouched. Zram does not
 provide hibernation; that requires separately configured disk-backed swap.
 
+## Optional window-session restoration
+
+Hyprcachy owns an experimental [native dwindle-tree/session plugin](plugins/window-session/).
+Setup builds its local pacman package without a fixed Hyprland version allowlist;
+its native plugin loads through a package-owned XDG autostart entry in the UWSM
+session, while restoration stays **disabled until explicitly enabled**. It uses Hyprland's embedded Lua
+runtime, not an external interpreter or daemon. Keep using `sudo pacman -Syu`
+or your usual pacman-based helper: hooks compile the plugin against relevant
+incoming packages in a disposable Btrfs/nspawn build environment before pacman can
+commit. No tests, compositors or GPU access run during updates. Compilation failures
+block the transaction instead of disabling the existing plugin. Transaction identity
+and integrity checks remain mandatory; ambiguous or unsupported transactions fail
+explicitly. There is no separate upgrade command. Dotfiles only configure
+`hl.plugin.window_session.config(...)`; no Lua loader block is needed. Compilation does not prove runtime correctness; read the
+plugin documentation and validate restoration separately before relying on it.
+
+To rebuild and install the plugin from this checkout, including uncommitted edits:
+
+```sh
+./rebuild-plugin.sh
+```
+
+Run as your normal user, not with `sudo`. It uses `makepkg` for a clean rebuild
+and installation through normal pacman hooks, prompting for privilege when needed.
+It reinstalls even when the package version is unchanged. Build work directories
+are cleaned on success; the package archive remains available. Additional arguments
+are passed to `makepkg`. It does not reload the running plugin; log out/in after
+native code changes.
+
 ## Fresh installation — partitioning required
 
 Boot a current Arch ISO in UEFI mode. Download **both** scripts together before

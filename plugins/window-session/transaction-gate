@@ -1,0 +1,73 @@
+#!/usr/bin/bash -p
+set -euo pipefail
+export PATH=/usr/bin LC_ALL=C
+umask 077
+library=/usr/lib/hyprcachy/window-session
+# shellcheck source=gate-lib.sh
+source "$library/gate-lib.sh"
+lock_state -x
+stage=
+# Retention starts at the last hook exit, not at the beginning of a long transaction.
+trap 'if [[ -n "$stage" && -d "$stage" ]]; then touch -- "$stage"; fi' EXIT
+if [[ -f "$state/active" ]]; then
+    previous=$(< "$state/active")
+    [[ $previous == /var/cache/hyprcachy-preflight.* && ! -L "$previous" ]] || exit 1
+    if [[ -d "$previous" ]]; then
+        [[ $(stat -c '%u:%a' "$previous") == 0:700 ]] || exit 1
+        if [[ -f "$previous/pid" && $(< "$previous/pid") == "$PPID" ]] && cmp -s "$previous/command" "/proc/$PPID/cmdline"; then stage=$previous; fi
+    else
+        rm -f "$state/active"
+        previous=''
+    fi
+fi
+new_context() {
+    if [[ -n ${previous:-} ]]; then echo "Previous preflight data retained at $previous" >&2; fi
+    stage=$(mktemp -d /var/cache/hyprcachy-preflight.XXXXXX)
+    printf '%s\n' "$PPID" > "$stage/pid"
+    cp -- "/proc/$PPID/cmdline" "$stage/command"
+    mkdir "$stage/check" "$stage/packages"
+    : > "$stage/incoming"
+    printf '%s\n' "$stage" > "$state/active"
+}
+case ${1:-} in
+incoming)
+    new_context
+    sort -u > "$stage/incoming"
+    ;;
+pre)
+    [[ -n "$stage" ]] || new_context
+    sort -u > "$stage/check/expected-targets"
+    # Removal of this package also removes the integration; never obstruct uninstall.
+    if grep -qx hyprcachy-window-session "$stage/check/expected-targets" &&
+        ! grep -qx hyprcachy-window-session "$stage/incoming"; then
+        rm -rf -- "$stage"; rm -f "$state/active"; exit 0
+    fi
+    dependencies=$(pactree --unique --linear hyprcachy-window-session)
+    if ! grep -Fxf "$stage/check/expected-targets" <<< "$dependencies" > /dev/null; then
+        rm -rf -- "$stage"; rm -f "$state/active"; exit 0
+    fi
+    # Use the caller already holding pacman's lock; never start a second host transaction.
+    [[ $(readlink -f "/proc/$PPID/exe") == /usr/bin/pacman ]] || {
+        gate_error 'Cannot replay this frontend safely. Standard pacman and helpers invoking pacman are supported.'; exit 1;
+    }
+    [[ -s "$stage/incoming" ]] || { gate_error 'Dependency removal without a replacement cannot be compile-checked.'; exit 1; }
+    "$library/preflight" "$stage" "$PPID"
+    pacman-conf > "$stage/config.current"
+    verify_commit "$stage" "$PPID" /proc /var/lib/pacman
+    same_targets "$stage/check/expected-targets" "$stage/check/targets" || { gate_error 'Prepared targets differ from preflight.'; exit 1; }
+    same_targets "$stage/incoming" "$stage/check/incoming" || { gate_error 'Incoming targets differ from preflight.'; exit 1; }
+    mv -- "$stage/passed" "$stage/authorized"
+    ;;
+post)
+    [[ -n "$stage" && -f "$stage/authorized" ]] || exit 0
+    pacman -Q | sort > "$stage/installed.actual"
+    cmp -s "$stage/check/installed.expected" "$stage/installed.actual" || {
+        gate_error "Committed package versions differ from the build snapshot. Artifacts retained at $stage; publication refused."; exit 1;
+    }
+    publish_artifacts "$stage" "$library"
+    rm -f "$state/active"
+    rm -rf -- "$stage"
+    echo 'Preflight-compiled window-session plugin installed. Restart Hyprland after the upgrade.'
+    ;;
+*) gate_error 'Expected incoming, pre or post'; exit 1 ;;
+esac

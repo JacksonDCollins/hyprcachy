@@ -1,0 +1,11 @@
+[Unit]
+Description=Remove expired Hyprcachy preflight data
+
+[Service]
+Type=oneshot
+TimeoutStartSec=5min
+ExecStart=/usr/lib/hyprcachy/window-session/cleanup
+UMask=0077
+NoNewPrivileges=true
+Nice=19
+IOSchedulingClass=idle

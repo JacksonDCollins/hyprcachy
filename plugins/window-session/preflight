@@ -1,0 +1,157 @@
+#!/usr/bin/bash -p
+# Internal PreTransaction worker. Pacman already owns the host database lock.
+set -euo pipefail
+export PATH=/usr/bin LC_ALL=C
+umask 077
+library=/usr/lib/hyprcachy/window-session
+# shellcheck source=gate-lib.sh
+source "$library/gate-lib.sh"
+stage=$1
+parent=$2
+[[ $(pacman-conf RootDir) == / && $(pacman-conf DBPath) == /var/lib/pacman/ ]] || {
+    gate_error 'Only the standard system root and pacman database are supported.'; exit 1;
+}
+[[ $(findmnt -n -o FSTYPE /) == btrfs ]] || { gate_error 'Disposable preflight requires the Hyprcachy Btrfs root.'; exit 1; }
+log=/var/log/hyprcachy-window-session-upgrade.log
+[[ ! -L "$log" ]] || exit 1
+install -m 0600 /dev/null "$log"
+exec > >(tee "$log") 2>&1
+cleanup() {
+    local status=$?
+    if [[ -d "$stage/root" ]]; then
+        if ! btrfs subvolume delete "$stage/root"; then
+            echo "Scratch snapshot retained at $stage/root; remove it manually." >&2
+            status=1
+        elif ! btrfs subvolume sync /; then status=1; fi
+    fi
+    if (( status != 0 )); then
+        rm -f "$stage/passed"
+        echo "Compatibility preflight failed; pacman must abort. See $log; staging data: $stage" >&2
+    fi
+    exit "$status"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+mapfile -d '' -t command < "$stage/command"
+parse_transaction "${command[@]}"
+database_fingerprint /var/lib/pacman > "$stage/database"
+pacman-conf > "$stage/config"
+cp -- "$stage/config" "$stage/check/config.expected"
+: > "$stage/sources.sha256"
+copy_archive() {
+    local file=$1 name=${1##*/} original copied digest
+    [[ $name =~ ^[a-zA-Z0-9@._+:~^-]+\.pkg\.tar(\.[a-zA-Z0-9]+)?$ && $name != *.sig && ! -e "$stage/packages/$name" ]] || {
+        gate_error "Unsupported or duplicate archive filename: $name"; return 1;
+    }
+    original=$(sha256sum -- "$file")
+    printf '%s\n' "$original" >> "$stage/sources.sha256"
+    cp --reflink=auto -- "$file" "$stage/packages/$name"
+    copied=$(sha256sum -- "$stage/packages/$name")
+    digest=${original#\\}
+    [[ ${digest%% *} == "${copied%% *}" ]] || { gate_error 'Package changed while being copied.'; return 1; }
+    if [[ -f "$file.sig" ]]; then
+        sha256sum -- "$file.sig" >> "$stage/sources.sha256"
+        cp -- "$file.sig" "$stage/packages/$name.sig"
+    fi
+}
+query_targets=("${replay_targets[@]}")
+literal_targets=() force_identity_names=()
+ignore_groups=$(pacman-conf IgnoreGroup)
+for option in "${replay_options[@]}"; do
+    [[ $option != --ignoregroup ]] || ignore_groups=present
+done
+declare -A local_packages=()
+if [[ $operation == U ]]; then
+    query_targets=() files=()
+    for file in "${replay_targets[@]}"; do
+        [[ $file != *://* && $file != /proc/* && $file != /dev/fd/* ]] || {
+            gate_error 'Remote URLs and descriptor paths cannot be replayed; use local package files.'; exit 1;
+        }
+        [[ $file == /* ]] || file="$(readlink -f "/proc/$parent/cwd")/$file"
+        file=$(realpath -e -- "$file")
+        copy_archive "$file"
+        metadata=$(pacman -Qp -- "$stage/packages/${file##*/}")
+        read -r name version extra <<< "$metadata"
+        [[ $name =~ ^[a-zA-Z0-9@._+-]+$ && -n $version && -z $extra && -z ${local_packages[$name]:-} ]] || {
+            gate_error 'Ambiguous local package identity.'; exit 1;
+        }
+        local_packages[$name]=$version
+        query_targets+=("$file")
+        files+=("/packages/${file##*/}")
+    done
+    (( ${#files[@]} > 0 )) || { gate_error 'No local archives to replay.'; exit 1; }
+    transaction=(-U "${replay_options[@]}" --noconfirm --cachedir /packages -- "${files[@]}")
+else
+    # Exempt explicit packages only if ALL original targets are literal packages,
+    # not interactive group/virtual-provider selections preceding another target.
+    all_literals=true
+    for target in "${replay_targets[@]}"; do
+        literal=${target##*/}
+        if [[ ! $literal =~ ^[a-zA-Z0-9@._+-]+$ ]] ||
+            ! resolved=$(pacman -Sp --nodeps --noconfirm --print-format '%n' -- "$target") || [[ $resolved != "$literal" ]]; then
+            all_literals=false; literal_targets=(); break
+        fi
+        [[ $target != */* ]] || literal_targets+=("$literal")
+        [[ -z $ignore_groups ]] || force_identity_names+=("$literal")
+    done
+    if [[ -n $ignore_groups ]] && ! $all_literals; then
+        gate_error 'Cannot replay group/virtual targets with IgnoreGroup overrides safely; use explicit repo/package targets.'; exit 1;
+    fi
+    transaction=(-S "${replay_options[@]}" --noconfirm --cachedir /packages -- "${replay_targets[@]}")
+fi
+# Re-prepare both -S and -U: local installs can also pull repository dependencies.
+# The databases are already refreshed/locked; do not refresh or download here.
+pacman "-$operation" "${replay_options[@]}" --print --noconfirm --print-format $'%n\t%v\t%f\t%h\t%g' \
+    -- "${query_targets[@]}" > "$stage/plan"
+cut -f 1 "$stage/plan" | sort -u > "$stage/planned-incoming"
+same_targets "$stage/incoming" "$stage/planned-incoming" || {
+    gate_error 'Cannot reproduce the selected packages. Specify non-default provider/group choices explicitly in your pacman command.'; exit 1;
+}
+if (( ${#extra_caches[@]} > 0 )); then caches=("${extra_caches[@]}"); else
+    configured_caches=$(pacman-conf CacheDir)
+    mapfile -t caches <<< "$configured_caches"
+fi
+while IFS=$'\t' read -r name version filename hash signature extra; do
+    [[ $name =~ ^[a-zA-Z0-9@._+-]+$ && -n $version ]] || { gate_error 'Invalid package identity.'; exit 1; }
+    if [[ -n ${local_packages[$name]:-} ]]; then
+        [[ ${local_packages[$name]} == "$version" ]] || { gate_error 'Local package version changed during preparation.'; exit 1; }
+        continue
+    fi
+    [[ $filename =~ ^[a-zA-Z0-9@._+:~^-]+\.pkg\.tar(\.[a-zA-Z0-9]+)?$ && $hash =~ ^[a-f0-9]{64}$ && -n $signature && $signature != '(null)' && -z $extra ]] || {
+        gate_error 'Missing or ambiguous repository archive metadata.'; exit 1;
+    }
+    found=false
+    for cache in "${caches[@]}"; do
+        [[ $cache == /* ]] || cache="$(readlink -f "/proc/$parent/cwd")/$cache"
+        [[ -f "$cache/$filename" ]] || continue
+        copy_archive "$cache/$filename"
+        found=true; break
+    done
+    $found || { gate_error "Pacman's downloaded archive was not found: $filename"; exit 1; }
+    (cd "$stage/packages"; printf '%s  %s\n' "$hash" "$filename" | sha256sum --check --strict)
+    printf '%s' "$signature" | base64 --decode > "$stage/packages/$filename.sig"
+    identity_mode=providers
+    for explicit in "${force_identity_names[@]}"; do
+        [[ $explicit != "$name" ]] || identity_mode=all
+    done
+    verify_provider_identity "$name" "$version" "$hash" "$stage/packages/$filename" "$identity_mode" "${literal_targets[@]}"
+done < "$stage/plan"
+(cd "$stage/packages"; sha256sum -- *.pkg.tar* > ../archives.sha256)
+printf '%s\0' "${transaction[@]}" > "$stage/check/arguments"
+cp -- "$stage/incoming" "$stage/check/expected-incoming"
+btrfs subvolume snapshot / "$stage/root"
+[[ $(database_fingerprint "$stage/root/var/lib/pacman") == "$(< "$stage/database")" ]] || {
+    gate_error 'The snapshot does not contain the same package databases. Unsupported root layout.'; exit 1;
+}
+# Remove only the snapshot's copy. The live lock belongs to the waiting pacman process.
+rm -f "$stage/root/var/lib/pacman/db.lck"
+cp -- "$library/candidate-check" "$stage/check/candidate-check"
+echo 'Compiling window-session against the pending packages in a private snapshot...'
+timeout --signal=TERM --kill-after=15s 600s systemd-nspawn --quiet --register=no --private-network --settings=no --link-journal=no \
+    --directory="$stage/root" --hostname=hyprcachy-preflight --drop-capability=CAP_SYS_ADMIN,CAP_MKNOD \
+    --bind-ro="$stage/packages:/packages" --bind="$stage/check:/check" \
+    /usr/bin/env -i PATH=/usr/bin LC_ALL=C HOME=/root /bin/bash /check/candidate-check
+[[ -f "$stage/check/success" ]] || { gate_error 'Candidate compilation did not complete.'; exit 1; }
+(cd "$stage/check/build"; sha256sum window-session.so > ../../artifacts.sha256)
+: > "$stage/passed"

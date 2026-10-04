@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# Runs ONLY in the disposable nspawn root. No host sockets, homes or display devices.
+set -euo pipefail
+# nspawn writes this even without a systemd PID 1; /run/systemd/container requires boot.
+[[ -f /run/host/container-manager && $(< /run/host/container-manager) == systemd-nspawn && -d /check && -d /packages ]] || {
+    echo 'candidate-check must run in the isolated upgrade container.' >&2; exit 1;
+}
+pacman-conf > /check/config.actual
+cmp /check/config.expected /check/config.actual
+mkdir -p /check/no-hooks
+# Mask existing AND incoming hooks; package scripts/system boot work are not compatibility tests.
+configured_hooks=$(pacman-conf HookDir)
+mapfile -t hookdirs <<< "$configured_hooks"
+hookdirs+=(/usr/share/libalpm/hooks)
+for dir in "${hookdirs[@]}"; do
+    for hook in "$dir"/*.hook; do
+        [[ -e "$hook" || -L "$hook" ]] || continue
+        ln -sf /dev/null "/check/no-hooks/${hook##*/}"
+    done
+done
+mapfile -d '' -t archives < <(find /packages -maxdepth 1 -type f \( -name '*.pkg.tar' -o -name '*.pkg.tar.*' \) ! -name '*.sig' -print0 | sort -z)
+(( ${#archives[@]} > 0 ))
+for archive in "${archives[@]}"; do
+    bsdtar -tf "$archive" > /check/archive-files
+    while IFS= read -r file; do
+        [[ $file == *.hook ]] || continue
+        ln -sf /dev/null "/check/no-hooks/${file##*/}"
+    done < /check/archive-files
+done
+# Record the actual prepared transaction, including removals/replacements, not a guessed dependency list.
+rm -f /check/no-hooks/hyprcachy-record.hook
+cat > /check/no-hooks/hyprcachy-record.hook <<'HOOK'
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Operation = Remove
+Type = Package
+Target = *
+[Action]
+When = PreTransaction
+Exec = /bin/sh -c "sort -u > /check/targets"
+NeedsTargets
+AbortOnFail
+HOOK
+rm -f /check/no-hooks/hyprcachy-incoming.hook
+cat > /check/no-hooks/hyprcachy-incoming.hook <<'HOOK'
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Type = Package
+Target = *
+[Action]
+When = PreTransaction
+Exec = /bin/sh -c "sort -u > /check/incoming"
+NeedsTargets
+AbortOnFail
+HOOK
+mapfile -d '' -t transaction < /check/arguments
+(( ${#transaction[@]} > 0 ))
+# The outer nspawn already has a private network and drops CAP_SYS_ADMIN.
+# Disable only pacman's nested network namespace, not its other sandbox features.
+# This flag is local to this trial invocation; never change the host pacman.conf.
+pacman --disable-sandbox-network --noscriptlet --hookdir /check/no-hooks "${transaction[@]}"
+cmp /check/expected-targets /check/targets
+cmp /check/expected-incoming /check/incoming
+pacman -Q | LC_ALL=C sort > /check/installed.expected
+ldconfig
+pactree --unique --linear hyprcachy-window-session > /check/dependencies
+grep -qx hyprcachy-window-session /check/dependencies
+source_dir=/usr/src/hyprcachy-window-session
+chmod 0755 /check
+mkdir -p /check/build /check/home
+chown 65534:65534 /check/build /check/home
+chmod 0700 /check/home
+run=(setpriv --reuid=65534 --regid=65534 --clear-groups --no-new-privs
+    env -i PATH=/usr/bin LC_ALL=C HOME=/check/home)
+cd -- "$source_dir"
+# Compile only. Do not execute tests, load the plugin or start a compositor.
+timeout --kill-after=10s 300s "${run[@]}" make all BUILD_DIR=/check/build
+: > /check/success

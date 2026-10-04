@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Hyprcachy Window Session
+Comment=Load the native window-session plugin into Hyprland
+Exec=/usr/bin/hyprctl plugin load /usr/lib/hyprcachy/window-session/window-session.so
+TryExec=/usr/bin/hyprctl
+OnlyShowIn=Hyprland;
+NoDisplay=true
+Terminal=false
