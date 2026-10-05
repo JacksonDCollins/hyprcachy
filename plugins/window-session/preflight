@@ -57,6 +57,7 @@ copy_archive() {
 }
 query_targets=("${replay_targets[@]}")
 literal_targets=() force_identity_names=()
+all_literals=true
 ignore_groups=$(pacman-conf IgnoreGroup)
 for option in "${replay_options[@]}"; do
     [[ $option != --ignoregroup ]] || ignore_groups=present
@@ -85,7 +86,6 @@ if [[ $operation == U ]]; then
 else
     # Exempt explicit packages only if ALL original targets are literal packages,
     # not interactive group/virtual-provider selections preceding another target.
-    all_literals=true
     for target in "${replay_targets[@]}"; do
         literal=${target##*/}
         if [[ ! $literal =~ ^[a-zA-Z0-9@._+-]+$ ]] ||
@@ -131,11 +131,26 @@ while IFS=$'\t' read -r name version filename hash signature extra; do
     $found || { gate_error "Pacman's downloaded archive was not found: $filename"; exit 1; }
     (cd "$stage/packages"; printf '%s  %s\n' "$hash" "$filename" | sha256sum --check --strict)
     printf '%s' "$signature" | base64 --decode > "$stage/packages/$filename.sig"
+done < "$stage/plan"
+# With literal arguments, any provider question must come from package dependencies.
+# Gather these only after all archives (including local -U targets) are available.
+requirements=''
+if $all_literals; then
+    requirements="$stage/required-dependencies"
+    : > "$requirements"
+    for archive in "$stage/packages/"*.pkg.tar*; do
+        [[ $archive != *.sig ]] || continue
+        metadata=$(bsdtar -xOf "$archive" --fast-read .PKGINFO)
+        awk '$1 == "depend" && $2 == "=" { sub(/[<>=].*$/, "", $3); print $3 }' <<< "$metadata" >> "$requirements"
+    done
+fi
+while IFS=$'\t' read -r name version filename hash signature extra; do
+    [[ -z ${local_packages[$name]:-} ]] || continue
     identity_mode=providers
     for explicit in "${force_identity_names[@]}"; do
         [[ $explicit != "$name" ]] || identity_mode=all
     done
-    verify_provider_identity "$name" "$version" "$hash" "$stage/packages/$filename" "$identity_mode" "${literal_targets[@]}"
+    verify_provider_identity "$name" "$version" "$hash" "$stage/packages/$filename" "$identity_mode" "$requirements" "${literal_targets[@]}"
 done < "$stage/plan"
 (cd "$stage/packages"; sha256sum -- *.pkg.tar* > ../archives.sha256)
 printf '%s\0' "${transaction[@]}" > "$stage/check/arguments"

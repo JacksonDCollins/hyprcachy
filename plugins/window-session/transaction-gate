@@ -42,7 +42,7 @@ pre)
         ! grep -qx hyprcachy-window-session "$stage/incoming"; then
         rm -rf -- "$stage"; rm -f "$state/active"; exit 0
     fi
-    dependencies=$(pactree --unique --linear hyprcachy-window-session)
+    dependencies=$(compatibility_dependencies)
     if ! grep -Fxf "$stage/check/expected-targets" <<< "$dependencies" > /dev/null; then
         rm -rf -- "$stage"; rm -f "$state/active"; exit 0
     fi

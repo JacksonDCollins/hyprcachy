@@ -75,11 +75,19 @@ parse_transaction() {
         [[ $arg != - ]] || { gate_error 'Stdin package lists cannot be replayed.'; return 1; }
     done
 }
+# Track native compatibility, not dependencies of maintenance/notification tools.
+compatibility_dependencies() {
+    local root
+    printf '%s\n' hyprcachy-window-session
+    for root in hyprland lua gcc make pkgconf; do
+        pactree --unique --linear "$root" || return 1
+    done
+}
 # Provider/replacement menus can contain the SAME name from different repositories.
 # Matching target names alone cannot prove which build the user selected.
 verify_provider_identity() {
-    local name=$1 version=$2 hash=$3 archive=$4 mode=$5 explicit rows candidate candidate_version candidate_hash extra metadata key equal replaced replacement=false
-    shift 5
+    local name=$1 version=$2 hash=$3 archive=$4 mode=$5 requirements=$6 explicit rows candidate candidate_version candidate_hash extra metadata key equal replaced replacement=false provides matched
+    shift 6
     for explicit in "$@"; do [[ $explicit != "$name" ]] || return 0; done
     metadata=$(bsdtar -xOf "$archive" --fast-read .PKGINFO) || return 1
     while read -r key equal replaced extra; do
@@ -90,6 +98,13 @@ verify_provider_identity() {
     if [[ $mode != all ]] && ! $replacement; then
         pacman -Q -- "$name" > /dev/null 2>&1 && return 0
         grep -q '^provides = ' <<< "$metadata" || return 0
+        if [[ -n $requirements ]]; then
+            # Literal targets/dependencies use repository priority, not a provider menu.
+            # Only provisions actually requested by this plan can introduce a choice.
+            provides=$(awk -v name="$name" '$1 == "provides" && $2 == "=" { sub(/[<>=].*$/, "", $3); if ($3 != name) print $3 }' <<< "$metadata")
+            matched=$(grep -Fxf "$requirements" <<< "$provides") || [[ $? == 1 ]] || return 1
+            [[ -n $matched ]] || return 0
+        fi
     fi
     # Info mode includes every repository, even versions excluded by IgnorePkg.
     # A print/prepare query would hide those and could miss an interactive override.

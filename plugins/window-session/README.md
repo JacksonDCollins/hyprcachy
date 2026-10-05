@@ -339,7 +339,14 @@ sudo pacman -Syu
 sudo pacman -U ./reviewed-package.pkg.tar.zst
 ```
 
-When the transaction touches this package or its installed dependency closure:
+Compilation is gated only when the transaction touches this package or the
+installed dependency closures of its native build roots: `hyprland`, `lua`,
+`gcc`, `make` and `pkgconf`. Dependencies needed only by maintenance/startup tools
+(e.g. `device-mapper` through those tools) do not trigger a compatibility build.
+The hooks still observe package names to detect relevant changes; unrelated
+transactions are skipped before command replay or archive/provider checks.
+
+For a relevant transaction:
 
 1. The first pre-hook records actual incoming package names. Pacman has already
    resolved/downloaded the transaction and still owns its database lock.
@@ -363,9 +370,14 @@ When the transaction touches this package or its installed dependency closure:
 The hooks do not receive package versions directly. Replaying a different
 selection is therefore **refused**, not treated as a successful preflight: unsupported
 CLI options/frontends, changed inputs, or non-default provider/group selections
-that cannot be reproduced abort with an error. Providers/replacements offered under the
-same name but different builds in multiple repositories are also refused unless
-selected explicitly as repository-qualified literal targets. IgnoreGroup overrides
+that cannot be reproduced abort with an error. Ordinary repository overlap is not
+itself ambiguous: named packages/dependencies use pacman's repository priority.
+For literal arguments, the gate inspects incoming archive dependency metadata
+(including local `-U` archives); unused `Provides` entries do not imply a provider
+choice. Potential virtual-provider choices, replacements of installed packages,
+and IgnoreGroup overrides still require identity checks. Same-named candidate
+builds that cannot be distinguished from hook data require repository-qualified
+literal targets. These conservative checks do not guess an interactive selection. IgnoreGroup overrides
 combined with group/virtual targets cannot be replayed safely either. Specify the
 chosen `repo/package` in your normal pacman command rather than letting the gate guess. Custom roots,
 custom pacman configuration, stdin target lists, remote `-U` URLs and direct
