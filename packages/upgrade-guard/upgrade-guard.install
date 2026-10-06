@@ -4,7 +4,7 @@ system_live() {
 }
 post_install() {
     if system_live; then
-        systemctl daemon-reload && systemctl start hyprcachy-window-session-cleanup.timer
+        systemctl daemon-reload && systemctl start hyprcachy-upgrade-cleanup.timer
     fi
 }
 post_upgrade() {
@@ -12,6 +12,6 @@ post_upgrade() {
 }
 pre_remove() {
     if system_live; then
-        systemctl stop hyprcachy-window-session-cleanup.timer hyprcachy-window-session-cleanup.service
+        systemctl stop hyprcachy-upgrade-cleanup.timer hyprcachy-upgrade-cleanup.service
     fi
 }

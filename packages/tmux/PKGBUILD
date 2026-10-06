@@ -1,0 +1,31 @@
+# Companion executable; the distribution continues to own /usr/bin/tmux.
+pkgname=hyprcachy-tmux
+pkgver=0.3.0
+pkgrel=1
+pkgdesc='Split top/bottom tmux status with guarded automatic rebuilds'
+arch=('x86_64')
+license=('BSD')
+depends=('tmux' 'hyprcachy-upgrade-guard>=0.2.0' 'base-devel' 'git' 'curl')
+options=('!debug' '!strip' '!lto')
+source=('split-status.patch' 'build' 'hyprcachy-tmux' 'README.md'
+        'tmux-source' 'upgrade-adapter')
+# Local checkout files require review; the stock recipe's source digests do not get skipped.
+sha256sums=('SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP')
+
+build() {
+    bash -p ./tmux-source "$srcdir/upstream"
+    bash ./build "$srcdir/upstream" "$srcdir/output"
+}
+
+package() {
+    install -Dm755 upgrade-adapter "$pkgdir/usr/lib/hyprcachy/upgrade.d/$pkgname/adapter"
+    install -Dm755 tmux-source "$pkgdir/usr/lib/hyprcachy/upgrade.d/$pkgname/tmux-source"
+    install -Dm755 output/tmux "$pkgdir/usr/lib/hyprcachy/tmux/tmux"
+    install -Dm644 output/tmux.version "$pkgdir/usr/lib/hyprcachy/tmux/upstream-version"
+    install -Dm755 hyprcachy-tmux "$pkgdir/usr/bin/hyprcachy-tmux"
+    install -Dm755 build "$pkgdir/usr/lib/hyprcachy/tmux/build"
+    install -Dm644 split-status.patch "$pkgdir/usr/lib/hyprcachy/tmux/split-status.patch"
+    install -Dm644 README.md "$pkgdir/usr/share/doc/hyprcachy-tmux/README.md"
+    install -d "$pkgdir/usr/share/licenses/hyprcachy-tmux"
+    ln -s ../tmux/LICENSE "$pkgdir/usr/share/licenses/hyprcachy-tmux/LICENSE"
+}

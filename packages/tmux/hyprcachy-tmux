@@ -1,0 +1,8 @@
+#!/bin/sh
+# Never silently start a stock or stale server after a failed publication.
+IFS= read -r version < /usr/lib/hyprcachy/tmux/upstream-version || exit 1
+if [ ! -d "/var/lib/pacman/local/tmux-$version" ]; then
+    printf '%s\n' 'Patched tmux is out of date. Repair the guarded build with sudo pacman -S tmux.' >&2
+    exit 1
+fi
+exec /usr/lib/hyprcachy/tmux/tmux "$@"

@@ -2,9 +2,12 @@
 set -euo pipefail
 export PATH=/usr/bin LC_ALL=C
 umask 077
-library=/usr/lib/hyprcachy/window-session
+library=/usr/lib/hyprcachy/upgrade-guard
+registry=/usr/lib/hyprcachy/upgrade.d
 # shellcheck source=gate-lib.sh
 source "$library/gate-lib.sh"
+# shellcheck source=components.sh
+source "$library/components.sh"
 lock_state -x
 stage=
 # Retention starts at the last hook exit, not at the beginning of a long transaction.
@@ -37,13 +40,15 @@ incoming)
 pre)
     [[ -n "$stage" ]] || new_context
     sort -u > "$stage/check/expected-targets"
-    # Removal of this package also removes the integration; never obstruct uninstall.
-    if grep -qx hyprcachy-window-session "$stage/check/expected-targets" &&
-        ! grep -qx hyprcachy-window-session "$stage/incoming"; then
+    # Only removing the guard disables the integration, not removing a component.
+    if grep -qx hyprcachy-upgrade-guard "$stage/check/expected-targets" &&
+        ! grep -qx hyprcachy-upgrade-guard "$stage/incoming"; then
         rm -rf -- "$stage"; rm -f "$state/active"; exit 0
     fi
-    dependencies=$(compatibility_dependencies)
-    if ! grep -Fxf "$stage/check/expected-targets" <<< "$dependencies" > /dev/null; then
+    select_components "$stage" "$registry"
+    # Incoming registrations cannot be discovered from the installed registry.
+    # Reserve the native package namespace for inspecting new component payloads.
+    if [[ ! -s "$stage/check/selected" ]] && ! grep -q '^hyprcachy-' "$stage/incoming"; then
         rm -rf -- "$stage"; rm -f "$state/active"; exit 0
     fi
     # Use the caller already holding pacman's lock; never start a second host transaction.
@@ -52,6 +57,7 @@ pre)
     }
     [[ -s "$stage/incoming" ]] || { gate_error 'Dependency removal without a replacement cannot be compile-checked.'; exit 1; }
     "$library/preflight" "$stage" "$PPID"
+    if [[ -f "$stage/skipped" ]]; then rm -rf -- "$stage"; rm -f "$state/active"; exit 0; fi
     pacman-conf > "$stage/config.current"
     verify_commit "$stage" "$PPID" /proc /var/lib/pacman
     same_targets "$stage/check/expected-targets" "$stage/check/targets" || { gate_error 'Prepared targets differ from preflight.'; exit 1; }
@@ -64,10 +70,10 @@ post)
     cmp -s "$stage/check/installed.expected" "$stage/installed.actual" || {
         gate_error "Committed package versions differ from the build snapshot. Artifacts retained at $stage; publication refused."; exit 1;
     }
-    publish_artifacts "$stage" "$library"
+    publish_artifacts "$stage"
     rm -f "$state/active"
     rm -rf -- "$stage"
-    echo 'Preflight-compiled window-session plugin installed. Restart Hyprland after the upgrade.'
+    echo 'Preflight-built artifacts published. Running applications were not restarted.'
     ;;
 *) gate_error 'Expected incoming, pre or post'; exit 1 ;;
 esac

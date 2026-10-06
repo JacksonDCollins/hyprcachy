@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# Shared by makepkg and the network-isolated transaction candidate.
+set -euo pipefail
+export LC_ALL=C
+(( EUID != 0 && $# == 2 )) || { echo 'Run build INPUT OUTPUT as an unprivileged user.' >&2; exit 1; }
+input=$(realpath -- "$1")
+output=$(realpath -m -- "$2")
+library=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+work=$(mktemp -d)
+trap 'rm -rf -- "$work"' EXIT
+(cd -- "$input"; sha256sum --check --strict recipe.sha256)
+mkdir "$work/recipe" "$work/downloads" "$work/packages" "$work/home"
+bsdtar -xf "$input/recipe.tar.gz" --strip-components 1 -C "$work/recipe"
+cp -- "$input/PKGBUILD" "$work/recipe/PKGBUILD"
+cp -R -- "$input/tmux" "$work/downloads/tmux"
+cp -- /etc/makepkg.conf "$work/makepkg.conf"
+printf '\nunset BUILDDIR\nMAKEFLAGS=-j2\nSRCDEST=%q\nPKGDEST=%q\n' "$work/downloads" "$work/packages" >> "$work/makepkg.conf"
+# Do not inherit user build paths, signing credentials, or makepkg dotfiles.
+builder=(env -i PATH=/usr/bin LC_ALL=C HOME="$work/home" makepkg --config "$work/makepkg.conf" --nosign)
+cd -- "$work/recipe"
+metadata=$("${builder[@]}" --printsrcinfo)
+sums=$(awk '$1 ~ /^(sha(256|384|512)|b2)sums(_[^ ]+)?$/ && $2 == "=" { print $3 }' <<< "$metadata")
+if [[ -z $sums ]] || grep -qEv '^([[:xdigit:]]{64}|[[:xdigit:]]{96}|[[:xdigit:]]{128})$' <<< "$sums"; then
+    echo 'The stock recipe must provide strong source digests; SKIP is not accepted.' >&2
+    exit 1
+fi
+# The original recipe verifies every source checksum and applies distribution
+# patches. --holdver uses the fetched Git tag, without updating it from the net.
+"${builder[@]}" --nobuild --holdver --nodeps --noconfirm
+patch --batch --forward --fuzz=0 -d src/tmux -p1 < "$library/split-status.patch"
+"${builder[@]}" --noextract --holdver --nodeps --nocheck --force --noconfirm
+mkdir -p -- "$output"
+found=false
+for package in "$work/packages"/tmux-*.pkg.tar*; do
+    [[ -f "$package" && $package != *.sig ]] || continue
+    [[ $(pacman -Qp -- "$package") == "tmux $(< "$input/upstream-version")" ]] || continue
+    bsdtar -xOf "$package" --fast-read usr/bin/tmux > "$output/tmux"
+    found=true
+    break
+done
+$found || { echo 'The distribution recipe did not produce the expected tmux package.' >&2; exit 1; }
+chmod 0755 "$output/tmux"
+cp -- "$input/upstream-version" "$output/tmux.version"
+# A private, profile-free terminal exercises actual rendering, not just whether
+# set-option accepts the patch. No default socket, login shell, user config or
+# snapshots are opened. These are build-time compatibility checks only.
+check=$(mktemp -d)
+trap 'env -u TMUX -u TMUX_PANE /usr/bin/tmux -S "$check/outer" kill-server 2>/dev/null || :; env -u TMUX -u TMUX_PANE "$output/tmux" -S "$check/inner" kill-server 2>/dev/null || :; rm -rf -- "$work" "$check"' EXIT
+cat > "$check/tmux.conf" <<'CONF'
+set -g default-shell /bin/sh
+set -g default-command 'printf PANE; exec sleep 60'
+set -g status 2
+set -g status-position split
+set -g status-format[0] 'TOP #S'
+set -g status-format[1] 'BOTTOM #S'
+CONF
+clean=(env -i PATH=/usr/bin LC_ALL=C HOME="$check" TERM=tmux-256color)
+# Pass commands as argv, not shell source containing input/output paths.
+"${clean[@]}" /usr/bin/tmux -S "$check/outer" -f /dev/null new-session -d -x 80 -y 24 -s check \
+    env -u TMUX -u TMUX_PANE "$output/tmux" -S "$check/inner" -f "$check/tmux.conf" new-session -s check
+"${clean[@]}" /usr/bin/tmux -S "$check/outer" set -g status off
+passed=false
+for (( i=0; i<100; i++ )); do
+    rows=$("${clean[@]}" /usr/bin/tmux -S "$check/outer" capture-pane -p)
+    if [[ $rows == TOP\ check$'\n'PANE* && ${rows##*$'\n'} == 'BOTTOM check' ]]; then passed=true; break; fi
+    sleep 0.05
+done
+$passed || { printf 'Split-status rendering check failed:\n%s\n' "$rows" >&2; exit 1; }
+echo 'Verified patched tmux: separate top/bottom status rows and correct pane origin.'

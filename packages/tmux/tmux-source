@@ -1,0 +1,70 @@
+#!/usr/bin/bash -p
+# Download data only. PKGBUILD execution and compilation belong in the build sandbox.
+set -euo pipefail
+export PATH=/usr/bin LC_ALL=C GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_TERMINAL_PROMPT=0
+umask 077
+(( $# == 1 || $# == 2 )) || { echo 'Usage: tmux-source OUTPUT [STOCK_PACKAGE]' >&2; exit 1; }
+out=$(realpath -m -- "$1")
+[[ ! -e "$out" && ! -L "$out" ]] || { echo 'Source output must not exist.' >&2; exit 1; }
+mkdir -m 0700 -- "$out"
+archive=${2:-}
+if [[ -z "$archive" ]]; then
+    version=$(pacman -Q tmux)
+    version=${version#tmux }
+    caches=$(pacman-conf CacheDir)
+    while IFS= read -r cache; do
+        for file in "$cache"/tmux-*.pkg.tar*; do
+            [[ -f "$file" && $file != *.sig ]] || continue
+            [[ $(pacman -Qp -- "$file") == "tmux $version" ]] || continue
+            archive=$file
+            break 2
+        done
+    done <<< "$caches"
+    if [[ -z "$archive" ]]; then
+        row=$(pacman -Sp --nodeps --noconfirm --print-format $'%v\t%l\t%g' -- tmux)
+        IFS=$'\t' read -r candidate url signature extra <<< "$row"
+        [[ $candidate == "$version" && $url == https://* && -n $signature && -z $extra && $row != *$'\n'* ]] || {
+            echo 'The exact installed tmux archive is unavailable; update normally before rebuilding.' >&2; exit 1;
+        }
+        curl --fail --location --proto '=https' --proto-redir '=https' --max-time 120 --max-filesize 16777216 \
+            --output "$out/stock.pkg.tar.zst" -- "$url"
+        printf '%s' "$signature" | base64 --decode > "$out/stock.pkg.tar.zst.sig"
+        archive=$out/stock.pkg.tar.zst
+    fi
+fi
+# Do not trust a PKGBUILD hash merely because an archive claims it. Require a
+# package signature accepted by the system keyring, including local -U inputs.
+[[ -f "$archive.sig" ]] || { echo "Missing tmux package signature: $archive.sig" >&2; exit 1; }
+pacman-key --verify "$archive.sig" "$archive"
+identity=$(pacman -Qp -- "$archive")
+[[ $identity == tmux\ * && $identity != *$'\n'* ]] || exit 1
+version=${identity#tmux }
+[[ $version =~ ^[0-9][a-zA-Z0-9._+]*-[0-9]+(\.[0-9]+)*$ ]] || { echo 'Unsupported tmux version syntax.' >&2; exit 1; }
+metadata=$(bsdtar -xOf "$archive" --fast-read .BUILDINFO)
+expected=$(awk '$1 == "pkgbuild_sha256sum" && $2 == "=" { print $3 }' <<< "$metadata")
+[[ $expected =~ ^[a-f0-9]{64}$ ]] || { echo 'Missing unique PKGBUILD digest.' >&2; exit 1; }
+printf '%s\n' "$version" > "$out/upstream-version"
+upstream=${version%-*}
+release=${version##*-}
+base=https://gitlab.archlinux.org/archlinux/packaging/packages/tmux
+matched=false
+for ref in "$upstream-${release%.*}" "$version"; do
+    if ! curl --silent --show-error --fail --location --proto '=https' --proto-redir '=https' \
+        --max-time 30 --max-filesize 1048576 --output "$out/recipe.raw" -- "$base/-/raw/$ref/PKGBUILD"; then continue; fi
+    # CachyOS's optimized rebuild changes pkgrel. The signed digest must still
+    # match exactly; unknown downstream changes require review, never guessing.
+    awk -v rel="$release" '/^pkgrel=/ { $0="pkgrel=" rel } { print }' "$out/recipe.raw" > "$out/PKGBUILD"
+    digest=$(sha256sum "$out/PKGBUILD")
+    [[ ${digest%% *} == "$expected" ]] || continue
+    matched=true
+    break
+done
+$matched || { echo 'No packaging recipe matches the signed tmux build; refusing an approximate rebuild.' >&2; exit 1; }
+# Include any packaging patches/files. makepkg verifies their declared checksums
+# offline. New source origins are intentionally not fetched automatically.
+curl --fail --location --proto '=https' --proto-redir '=https' --max-time 60 --max-filesize 16777216 \
+    --output "$out/recipe.tar.gz" -- "$base/-/archive/$ref/tmux-$ref.tar.gz"
+timeout --kill-after=10s 120s git -c core.hooksPath=/dev/null -c protocol.allow=never -c protocol.https.allow=always \
+    clone --quiet --bare --depth 1 --single-branch --branch "${upstream/_/}" https://github.com/tmux/tmux.git "$out/tmux"
+rm -f -- "$out/recipe.raw" "$out/stock.pkg.tar.zst" "$out/stock.pkg.tar.zst.sig"
+printf '%s  PKGBUILD\n' "$expected" > "$out/recipe.sha256"

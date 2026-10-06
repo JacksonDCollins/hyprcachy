@@ -1,0 +1,12 @@
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Type = Package
+Target = *
+
+[Action]
+Description = Record incoming packages for native compatibility checks
+When = PreTransaction
+Exec = /usr/lib/hyprcachy/upgrade-guard/transaction-gate incoming
+NeedsTargets
+AbortOnFail

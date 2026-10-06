@@ -3,16 +3,18 @@
 set -euo pipefail
 export PATH=/usr/bin LC_ALL=C
 umask 077
-library=/usr/lib/hyprcachy/window-session
+library=/usr/lib/hyprcachy/upgrade-guard
+registry=/usr/lib/hyprcachy/upgrade.d
 # shellcheck source=gate-lib.sh
 source "$library/gate-lib.sh"
+# shellcheck source=components.sh
+source "$library/components.sh"
 stage=$1
 parent=$2
 [[ $(pacman-conf RootDir) == / && $(pacman-conf DBPath) == /var/lib/pacman/ ]] || {
     gate_error 'Only the standard system root and pacman database are supported.'; exit 1;
 }
-[[ $(findmnt -n -o FSTYPE /) == btrfs ]] || { gate_error 'Disposable preflight requires the Hyprcachy Btrfs root.'; exit 1; }
-log=/var/log/hyprcachy-window-session-upgrade.log
+log=/var/log/hyprcachy-upgrade.log
 [[ ! -L "$log" ]] || exit 1
 install -m 0600 /dev/null "$log"
 exec > >(tee "$log") 2>&1
@@ -155,18 +157,30 @@ done < "$stage/plan"
 (cd "$stage/packages"; sha256sum -- *.pkg.tar* > ../archives.sha256)
 printf '%s\0' "${transaction[@]}" > "$stage/check/arguments"
 cp -- "$stage/incoming" "$stage/check/expected-incoming"
+cp -- "$library/candidate-check" "$library/gate-lib.sh" "$library/components.sh" "$stage/check/"
+prepare_components "$stage" "$registry"
+[[ ! -f "$stage/skipped" ]] || exit 0
+[[ $(findmnt -n -o FSTYPE /) == btrfs ]] || { gate_error 'Disposable preflight requires the Hyprcachy Btrfs root.'; exit 1; }
 btrfs subvolume snapshot / "$stage/root"
 [[ $(database_fingerprint "$stage/root/var/lib/pacman") == "$(< "$stage/database")" ]] || {
     gate_error 'The snapshot does not contain the same package databases. Unsupported root layout.'; exit 1;
 }
 # Remove only the snapshot's copy. The live lock belongs to the waiting pacman process.
 rm -f "$stage/root/var/lib/pacman/db.lck"
-cp -- "$library/candidate-check" "$stage/check/candidate-check"
-echo 'Compiling window-session against the pending packages in a private snapshot...'
+echo 'Building guarded native artifacts against the pending packages in a private snapshot...'
 timeout --signal=TERM --kill-after=15s 600s systemd-nspawn --quiet --register=no --private-network --settings=no --link-journal=no \
     --directory="$stage/root" --hostname=hyprcachy-preflight --drop-capability=CAP_SYS_ADMIN,CAP_MKNOD \
     --bind-ro="$stage/packages:/packages" --bind="$stage/check:/check" \
     /usr/bin/env -i PATH=/usr/bin LC_ALL=C HOME=/root /bin/bash /check/candidate-check
 [[ -f "$stage/check/success" ]] || { gate_error 'Candidate compilation did not complete.'; exit 1; }
-(cd "$stage/check/build"; sha256sum window-session.so > ../../artifacts.sha256)
+verify_controls "$stage"
+artifacts=()
+while IFS=$'\t' read -r artifact mode destination; do
+    [[ -f "$stage/check/build/$artifact" && ! -L "$stage/check/build/$artifact" ]] || {
+        gate_error "Missing regular artifact: $artifact"; exit 1;
+    }
+    artifacts+=("$artifact")
+done < "$stage/check/publications"
+(( ${#artifacts[@]} > 0 ))
+(cd "$stage/check/build"; sha256sum -- "${artifacts[@]}" > ../../artifacts.sha256)
 : > "$stage/passed"

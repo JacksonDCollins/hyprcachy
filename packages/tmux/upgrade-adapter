@@ -1,0 +1,29 @@
+#!/usr/bin/bash -p
+# Component-owned upgrade protocol; only build runs inside the offline candidate.
+set -euo pipefail
+export PATH=/usr/bin LC_ALL=C
+case ${1:-} in
+watch)
+    printf '%s\n' tmux
+    ;;
+prepare)
+    input=$2 packages=$3
+    archive=()
+    for file in "$packages/"*.pkg.tar*; do
+        [[ $file != *.sig ]] || continue
+        identity=$(pacman -Qp -- "$file")
+        [[ $identity != tmux\ * ]] || archive=("$file")
+    done
+    "$(dirname -- "$(realpath -- "${BASH_SOURCE[0]}")")/tmux-source" "$input/source" "${archive[@]}"
+    ;;
+build)
+    [[ $(pacman -Q tmux) == "tmux $(< "$2/source/upstream-version")" ]]
+    exec /usr/lib/hyprcachy/tmux/build "$2/source" "$3"
+    ;;
+artifacts)
+    # Ordered publication: the version marker must follow the executable.
+    printf 'tmux\t0755\t/usr/lib/hyprcachy/tmux/tmux\n'
+    printf 'tmux.version\t0644\t/usr/lib/hyprcachy/tmux/upstream-version\n'
+    ;;
+*) echo 'Expected watch, prepare INPUT PACKAGES, build INPUT OUTPUT, or artifacts.' >&2; exit 1 ;;
+esac

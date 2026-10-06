@@ -26,78 +26,15 @@ after moving/resizing it.
 No suitable native plugin was found in that search. These remain alternatives if
 inferred layouts or ordinary application/workspace restoration are sufficient.
 
-## Build and install
+## Build and packaging
 
-Prerequisites are Hyprland's installed development headers, GCC, make, pkgconf
-and Arch's usual `base-devel` packaging tools. The upgrade gate additionally uses
-Btrfs, systemd-nspawn, pacman-contrib (`pactree`) and util-linux. These are native
-build/isolation tools, not a session daemon. No test compositor or GPU access is
-required. Lua is already a Hyprland dependency; no Lua CLI is used.
-Runtime launches use the existing `uwsm app` path. Process-command fallback uses
-GNU coreutils 9.5+ `env` to preserve the working directory and argv[0].
+The implementation, Makefile, packaging and upgrade integration all live here
+in `packages/window-session/`. See [the package guide](README.md).
 
-```sh
-cd ~/hyprcachy
-./rebuild-plugin.sh
-```
-
-Run without `sudo`: `makepkg` builds as your user and prompts for privilege when
-installing dependencies or the finished package. The command uses the current
-local files (including uncommitted changes), performs a clean rebuild, and reinstalls
-even if the version is unchanged. Normal pacman compatibility hooks still run.
-Build work directories are cleaned on success; the package archive is retained.
-Extra arguments are forwarded to `makepkg`. It does not reload the live plugin.
-
-Package builds and the upgrade gate are compile-only: no tests or compositor
-harness are run. After replacing native code, restart the graphical session;
-a configuration reload cannot replace the already loaded binary.
-
-The gate requires a genuine nspawn container and matching transaction inputs.
-Only the trial pacman invocation uses `--disable-sandbox-network`: nspawn already
-provides the private network and drops `CAP_SYS_ADMIN`, which prevents creating a
-second network namespace. Pacman's other sandbox features and the host's pacman
-configuration are unchanged.
-
-Hyprcachy's `setup.sh` also builds
-and installs this local package as the selected user, never builds as root, and
-fails visibly on incompatible source/API changes rather than skipping the plugin. Two-script ISO installs fetch
-this repository's published `main` sources; publish the plugin before using that
-path. Normal cloned-repository setup uses its local sources. For an existing
-system use `setup.sh`, **not the disk-partitioning `install.sh`**.
-
-The package owns `/usr/lib/hyprcachy/window-session/`,
-`/usr/share/hyprcachy/window-session/`, root-owned source in
-`/usr/src/hyprcachy-window-session/` (only `plugin.cpp`, its three headers and
-`Makefile`), four pacman hooks, and
-`/etc/xdg/autostart/hyprcachy-window-session.desktop`. At the next login, Hyprcachy's
-UWSM session runs that entry to load the native plugin with `hyprctl plugin load`.
-There is no launcher script, extra daemon, or dotfiles loader. Loading the plugin
-registers its configuration API; restoration remains **opt-in**.
-
-A post-transaction hook refreshes running systemd user managers when the autostart
-entry changes, using Arch's existing systemd helper. This
-regenerates the startup unit without loading/reloading the plugin in a live desktop.
-A user manager can survive a graphical logout when another login session remains;
-without the refresh, the new entry may stay undiscovered across logins.
-To recover an already running session with **no plugin loaded**:
-
-```sh
-systemctl --user daemon-reload
-systemctl --user start 'app-hyprcachy\x2dwindow\x2dsession@autostart.service'
-hyprctl plugin list
-```
-
-Hyprland reloads its configuration after loading the plugin, so a guarded settings
-block skipped during initial startup is applied once the native API exists. The
-plugin starts its embedded-Lua controller after configuration processing finishes.
-The autostart entry is restricted to `XDG_CURRENT_DESKTOP=Hyprland`. Standalone
-sessions must provide XDG autostart support or explicitly load the native `.so`
-using Hyprland's plugin loading API. If plugin permission management is enabled,
-Hyprland may ask for approval; this package does not bypass permission policy.
-
-Do not also manage this plugin with `hyprpm`: pacman owns its source, compiled
-artifact and compile-only upgrade gate. Other unrelated plugins can use `hyprpm`.
-Dotfiles contain settings only.
+Build directly with `make` for development, or run `./rebuild-plugin.sh` from
+the repository root for a clean package build and guarded installation.
+See the package guide for prerequisites, startup integration and upgrade safety.
+Installed package documentation is in `README.md` beside this runtime guide.
 
 ## Enable restoration
 
@@ -328,130 +265,12 @@ in-memory operation, so avoid reloading while it runs. The recovery `cycle.tsv`
 survives reloads and normal recording, and remains available to `restore_cycle()`;
 only another explicit cycle overwrites it. Keep it private like other snapshots.
 
-## Upgrade safety and removal
+## Upgrades and removal
 
-Use your normal update command—there is no upgrade wrapper or separate check-only
-command:
-
-```sh
-sudo pacman -Syu
-# yay/paru updates also work when they invoke the standard pacman CLI.
-sudo pacman -U ./reviewed-package.pkg.tar.zst
-```
-
-Compilation is gated only when the transaction touches this package or the
-installed dependency closures of its native build roots: `hyprland`, `lua`,
-`gcc`, `make` and `pkgconf`. Dependencies needed only by maintenance/startup tools
-(e.g. `device-mapper` through those tools) do not trigger a compatibility build.
-The hooks still observe package names to detect relevant changes; unrelated
-transactions are skipped before command replay or archive/provider checks.
-
-For a relevant transaction:
-
-1. The first pre-hook records actual incoming package names. Pacman has already
-   resolved/downloaded the transaction and still owns its database lock.
-2. The second pre-hook re-prepares the original command against those frozen
-   databases, **without refreshing or downloading again**. It requires the same
-   incoming names, verifies repository archive hashes/signatures, and copies the
-   already-downloaded archives (or local `-U` files) into private staging.
-3. A disposable Btrfs snapshot/nspawn container replays the transaction. Incoming
-   and removed target sets must agree with the real pending transaction. Package
-   scripts and system hooks are masked inside the container only.
-4. Compile the native plugin against the **incoming headers/libraries**, as an
-   unprivileged user. Do not run tests, load the plugin, start any compositor or
-   access GPU devices.
-5. Before returning success, verify unchanged databases, configuration, original
-   package files and compiled artifacts. Delete the scratch root. `AbortOnFail`
-   stops pacman if any preflight step fails; no host lock is removed or replaced.
-6. Pacman commits its original transaction normally, preserving its dependency
-   reasons and choices. The post-hook checks installed versions and publishes
-   only the preflight-compiled binary. It performs no build after the upgrade.
-
-The hooks do not receive package versions directly. Replaying a different
-selection is therefore **refused**, not treated as a successful preflight: unsupported
-CLI options/frontends, changed inputs, or non-default provider/group selections
-that cannot be reproduced abort with an error. Ordinary repository overlap is not
-itself ambiguous: named packages/dependencies use pacman's repository priority.
-For literal arguments, the gate inspects incoming archive dependency metadata
-(including local `-U` archives); unused `Provides` entries do not imply a provider
-choice. Potential virtual-provider choices, replacements of installed packages,
-and IgnoreGroup overrides still require identity checks. Same-named candidate
-builds that cannot be distinguished from hook data require repository-qualified
-literal targets. These conservative checks do not guess an interactive selection. IgnoreGroup overrides
-combined with group/virtual targets cannot be replayed safely either. Specify the
-chosen `repo/package` in your normal pacman command rather than letting the gate guess. Custom roots,
-custom pacman configuration, stdin target lists, remote `-U` URLs and direct
-libalpm GUI frontends are currently unsupported. Standard `pacman -Syu`, explicit
-repository targets, local `-U`, and helpers invoking those commands are supported.
-Repository archives require SHA-256 metadata and a PGP signature; local packages
-retain pacman's configured local signature policy. Do not modify configuration
-or package files concurrently with an upgrade.
-
-**Compilation or transaction-integrity failure aborts before installed packages
-or the existing plugin binary are changed.** Repository metadata and the
-download cache can change. Errors are logged to
-`/var/log/hyprcachy-window-session-upgrade.log`. Fix the source or build environment,
-then retry. There is no fixed Hyprland allowlist. API changes can still require
-code changes. **Successful compilation does not prove runtime compatibility,
-correct restoration, or absence of compositor crashes.**
-
-Unrelated package operations skip the expensive preflight. `setup.sh`, `chwd`,
-and AUR helpers need no wrapper integration: their ordinary pacman transactions
-hit the same hooks. First installation does not retroactively run newly installed
-pre-hooks; the plugin remains opt-in until separately validated.
-
-The gate requires the normal Hyprcachy Btrfs root/database layout, free snapshot
-space and a working nspawn environment. No GPU/display/input devices, host
-Wayland sockets or user homes are bound into the build environment. Compilation
-runs unprivileged; the container has no network. If the build environment cannot
-run, the upgrade fails closed. Runtime, driver and kernel compatibility are not
-tested by this gate.
-
-The gate is **not** a filesystem transaction or rollback mechanism: an unrelated
-package script, disk error or interruption after pacman starts committing can
-still leave a partial upgrade. Post-commit publication errors are reported, not
-misrepresented as a cancelled update; compiled artifacts are retained for recovery.
-Failed/aborted transactions can leave root-only staging data at the path printed
-in the error log. Abrupt termination can also leave a pacman lock or scratch
-snapshot. The package installs and activates the system timer
-`hyprcachy-window-session-cleanup.timer`. It checks daily (with up to one hour of
-random delay) for staging data older than **seven days** since its last hook exit.
-Successful transactions still clean up immediately.
-
-Cleanup shares an exclusive lock with the transaction hooks, defers while pacman
-or nspawn is running or the pacman database lock exists, and skips stages whose
-recorded PID still exists. Only root-owned, mode-0700 staging directories matching
-the plugin's fixed naming scheme are eligible. Mounted paths, symlinks, unexpected
-roots and nested subvolumes are retained for inspection. A recognized scratch
-Btrfs subvolume is deleted with `btrfs subvolume delete --commit-after`, never
-recursive file deletion; only then can the remaining staging files be removed.
-An old reused PID can delay cleanup. Unexpected or damaged staging directories
-may still need manual attention. The hooks and cleanup **never remove pacman's
-lock**, saved layouts, or unrelated package caches.
-
-The timer is package-owned and enabled for boot; installation/upgrades start it on
-a running host. Chroot installs leave activation to the next boot. Uninstall stops
-and removes the timer and service; it does not purge retained user/recovery data.
-No desktop restart is needed for this housekeeping change.
-
-```sh
-systemctl list-timers hyprcachy-window-session-cleanup.timer
-journalctl -u hyprcachy-window-session-cleanup.service
-# Optional: run the same age-limited, guarded cleanup now.
-sudo systemctl start hyprcachy-window-session-cleanup.service
-```
-
-The latest upgrade log is overwritten each preflight, not accumulated. Temporary
-development builds under `/tmp` follow the system's normal temporary-file policy.
-Manual
-library replacement, disabling hooks, or explicit removal of the plugin bypasses
-this protection. Keep normal system backups/snapshots.
-
-The native plugin checks both the running compositor's commit and its ABI hash. Restart Hyprland after successful upgrades; no hot replacement is done.
-Remove the configuration call, or set `enabled = false` in it, and reload to
-stop recording/restoring (the upgrade gate
-remains installed). `sudo pacman -R hyprcachy-window-session` explicitly removes
-both the plugin and gate; private desktop snapshots remain.
+See [the package guide](README.md) for guarded updates,
+startup integration, removal and the old guard's migration handoff. Replacing
+native code requires restarting Hyprland; a configuration reload cannot replace
+the loaded binary. Removing the package does not delete private snapshots.
 
 ## Known limits
 

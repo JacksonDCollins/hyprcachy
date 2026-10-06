@@ -1,0 +1,11 @@
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Operation = Remove
+Type = Package
+Target = *
+
+[Action]
+Description = Publish preflight-built native artifacts
+When = PostTransaction
+Exec = /bin/sh -c "test ! -x /usr/lib/hyprcachy/upgrade-guard/transaction-gate || exec /usr/lib/hyprcachy/upgrade-guard/transaction-gate post"

@@ -4,7 +4,7 @@ set -euo pipefail
 export PATH=/usr/bin LC_ALL=C
 umask 077
 # shellcheck source=gate-lib.sh
-source /usr/lib/hyprcachy/window-session/gate-lib.sh
+source /usr/lib/hyprcachy/upgrade-guard/gate-lib.sh
 lock_state -n || exit 0
 
 idle() {

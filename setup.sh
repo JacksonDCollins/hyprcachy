@@ -10,7 +10,7 @@ PACKAGES=(
     xdg-desktop-portal-hyprland xdg-desktop-portal-gtk hyprpolkitagent
     qt5-wayland qt6-wayland noto-fonts networkmanager bluez upower
     chwd pciutils linux-firmware zram-generator
-    btrfs-progs pacman-contrib
+    btrfs-progs pacman-contrib base-devel curl
 )
 
 die() { echo "Error: $*" >&2; exit 1; }
@@ -193,29 +193,40 @@ done
 bash ./setup.sh "$profile"
 ' -- "$profile"
 
-# Build our native plugin as the user, then install a tracked local pacman package.
-# Two-script ISO installs do not carry plugin sources, so fetch this same project's
+# Build the independent engine and components as the user, then install together.
+# Two-script ISO installs do not carry these sources, so fetch this same project's
 # published source as the user in that case. Never execute dotfiles scripts as root.
 plugin_build=$(mktemp -d /tmp/hyprcachy-plugin.XXXXXX)
 trap 'rm -rf -- "$plugin_build"' EXIT
 chown "$uid:$(id -g "$user")" "$plugin_build"
-if [[ -d "$repo_dir/plugins/window-session" ]]; then
-    cp -R -- "$repo_dir/plugins/window-session" "$plugin_build/source"
-    chown -R "$uid:$(id -g "$user")" "$plugin_build/source"
-    plugin_source="$plugin_build/source"
+if [[ -d "$repo_dir/packages/window-session" ]]; then
+    mkdir -p "$plugin_build/packages"
+    cp -R -- "$repo_dir/packages/window-session" "$plugin_build/packages/window-session"
+    cp -R -- "$repo_dir/packages/tmux" "$plugin_build/packages/tmux"
+    cp -R -- "$repo_dir/packages/upgrade-guard" "$plugin_build/packages/upgrade-guard"
+    chown -R "$uid:$(id -g "$user")" "$plugin_build"
+    plugin_source="$plugin_build/packages/window-session"
+    tmux_source="$plugin_build/packages/tmux"
+    guard_source="$plugin_build/packages/upgrade-guard"
 else
     runuser -u "$user" -- env -u BASH_ENV -u ENV HOME="$user_home" \
         git clone --depth 1 --branch main https://github.com/JacksonDCollins/hyprcachy.git "$plugin_build/repo"
-    plugin_source="$plugin_build/repo/plugins/window-session"
+    plugin_source="$plugin_build/repo/packages/window-session"
+    tmux_source="$plugin_build/repo/packages/tmux"
+    guard_source="$plugin_build/repo/packages/upgrade-guard"
 fi
-runuser -u "$user" -- env -u BASH_ENV -u ENV HOME="$user_home" USER="$user" LOGNAME="$user" \
-    /usr/bin/bash -c 'cd -- "$1" && exec makepkg --cleanbuild --force --nodeps --noconfirm' -- "$plugin_source"
-plugin_packages=()
-for package in "$plugin_source"/hyprcachy-window-session-*.pkg.tar.*; do
-    [[ -f "$package" && "$package" != *.sig ]] && plugin_packages+=("$package")
+# Retire the old bundled guard in the same transaction that installs the new
+# engine/adapters, avoiding parallel old and new pre-transaction hooks.
+native_packages=()
+for source_dir in "$guard_source" "$plugin_source" "$tmux_source"; do
+    runuser -u "$user" -- env -u BASH_ENV -u ENV HOME="$user_home" USER="$user" LOGNAME="$user" \
+        /usr/bin/bash -c 'cd -- "$1" && exec makepkg --cleanbuild --force --nodeps --noconfirm' -- "$source_dir"
+    mapfile -t built_packages < <(runuser -u "$user" -- env -u BASH_ENV -u ENV HOME="$user_home" \
+        /usr/bin/bash -c 'cd -- "$1" && exec makepkg --packagelist' -- "$source_dir")
+    (( ${#built_packages[@]} == 1 )) && [[ -f ${built_packages[0]} ]] || die 'Expected exactly one built native package.'
+    native_packages+=("${built_packages[0]}")
 done
-(( ${#plugin_packages[@]} == 1 )) || die 'Expected exactly one built window-session package.'
-pacman -U --noconfirm -- "${plugin_packages[0]}"
+pacman -U --noconfirm -- "${native_packages[@]}"
 rm -rf -- "$plugin_build"
 trap - EXIT
 

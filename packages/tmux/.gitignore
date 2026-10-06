@@ -1,5 +1,3 @@
-/build/
 /src/
 /pkg/
 /*.pkg.tar.*
-/*.log

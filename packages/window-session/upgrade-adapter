@@ -1,0 +1,25 @@
+#!/usr/bin/bash -p
+# Component-owned policy. Never load the plugin or start a compositor here.
+set -euo pipefail
+export PATH=/usr/bin LC_ALL=C
+case ${1:-} in
+watch)
+    for root in hyprland lua gcc make pkgconf; do
+        # Linear output hides resolved providers behind dependency expressions.
+        graph=$(pactree --graph --unique "$root")
+        awk -F '"' '/ -> / {
+            if ($2 != "START" && $2 ~ /^[a-zA-Z0-9@._+-]+$/) print $2
+            if ($4 ~ /^[a-zA-Z0-9@._+-]+$/) print $4
+        }' <<< "$graph"
+    done
+    ;;
+prepare) : ;;
+build)
+    cd -- /usr/src/hyprcachy-window-session
+    exec make all BUILD_DIR="$3"
+    ;;
+artifacts)
+    printf 'window-session.so\t0644\t/usr/lib/hyprcachy/window-session/window-session.so\n'
+    ;;
+*) echo 'Expected watch, prepare INPUT PACKAGES, build INPUT OUTPUT, or artifacts.' >&2; exit 1 ;;
+esac

@@ -6,6 +6,6 @@ Type = Package
 Target = *
 
 [Action]
-Description = Publish the preflight-compiled window-session binary
+Description = Finish any pre-adapter window-session upgrade
 When = PostTransaction
 Exec = /bin/sh -c "test ! -x /usr/lib/hyprcachy/window-session/transaction-gate || exec /usr/lib/hyprcachy/window-session/transaction-gate post"

@@ -1,9 +1,9 @@
 # shellcheck shell=bash
 # Shared, data-only verification helpers. Never source transaction manifests.
-gate_error() { echo "Window-session upgrade blocked: $*" >&2; return 1; }
+gate_error() { echo "Hyprcachy upgrade blocked: $*" >&2; return 1; }
 # Serialize hooks and retention cleanup without creating or removing pacman's lock.
 lock_state() {
-    state=/run/hyprcachy-window-session
+    state=/run/hyprcachy-upgrade-guard
     (( EUID == 0 )) || { gate_error 'Root is required.'; return 1; }
     [[ ! -L "$state" ]] || return 1
     if [[ -e "$state" ]]; then [[ $(stat -c '%u:%a' "$state") == 0:700 ]] || return 1; fi
@@ -75,13 +75,13 @@ parse_transaction() {
         [[ $arg != - ]] || { gate_error 'Stdin package lists cannot be replayed.'; return 1; }
     done
 }
-# Track native compatibility, not dependencies of maintenance/notification tools.
-compatibility_dependencies() {
-    local root
-    printf '%s\n' hyprcachy-window-session
-    for root in hyprland lua gcc make pkgconf; do
-        pactree --unique --linear "$root" || return 1
-    done
+# Components are independent; removing one must not disable checks for another.
+component_active() {
+    local name=$1 stage=$2
+    if grep -qx "$name" "$stage/check/expected-targets" && ! grep -qx "$name" "$stage/incoming"; then
+        return 1
+    fi
+    pacman -Q "$name" >/dev/null 2>&1 || grep -qx "$name" "$stage/incoming"
 }
 # Provider/replacement menus can contain the SAME name from different repositories.
 # Matching target names alone cannot prove which build the user selected.
@@ -137,13 +137,51 @@ verify_commit() {
     sha256sum --check --strict "$stage/sources.sha256" || {
         gate_error 'Original package files changed during preflight.'; return 1;
     }
+    verify_controls "$stage" || { gate_error 'Component instructions or build inputs changed.'; return 1; }
     (cd -- "$stage/check/build" && sha256sum --check --strict ../../artifacts.sha256) || {
-        gate_error 'Compiled plugin artifacts changed.'; return 1;
+        gate_error 'Compiled artifacts changed.'; return 1;
     }
 }
+# Publication paths are data, not shell commands. Components may only replace
+# package-owned files below our library tree; parent symlinks are never followed.
+publication_path() {
+    [[ $1 == 0644 || $1 == 0755 ]] &&
+        [[ $2 =~ ^/usr/lib/hyprcachy/([a-zA-Z0-9._+-]+/)*[a-zA-Z0-9._+-]+$ && $2 != *"/../"* && $2 != *"/./"* && $2 != */. && $2 != */.. ]]
+}
+publication_target() {
+    local mode=$1 destination=$2 directory
+    publication_path "$mode" "$destination" || return 1
+    directory=${destination%/*}
+    while [[ $directory != / ]]; do
+        [[ -d $directory && ! -L $directory ]] || return 1
+        directory=${directory%/*}; [[ -n $directory ]] || directory=/
+    done
+    [[ -f $destination && ! -L $destination ]]
+}
+publish_file() {
+    local source=$1 mode=$2 destination=$3 temporary
+    publication_target "$mode" "$destination" || return 1
+    temporary=$(mktemp "${destination%/*}/.upgrade.XXXXXX") || return 1
+    if install -m "$mode" -- "$source" "$temporary" && mv -fT -- "$temporary" "$destination"; then return 0; fi
+    rm -f -- "$temporary"
+    return 1
+}
 publish_artifacts() {
-    local stage=$1 output=$2
-    (cd -- "$stage/check/build" && sha256sum --check --strict ../../artifacts.sha256) || return 1
-    install -m 0644 "$stage/check/build/window-session.so" "$output/window-session.so.new" &&
-        mv -f -- "$output/window-session.so.new" "$output/window-session.so"
+    local stage=$1 artifact mode destination extra current owner
+    verify_controls "$stage" || return 1
+    (cd "$stage/check/build" && sha256sum --check --strict ../../artifacts.sha256) || return 1
+    [[ -s "$stage/check/publications" ]] || return 1
+    # Validate EVERY declaration before publishing ANY artifact.
+    while IFS=$'\t' read -r artifact mode destination extra; do
+        [[ $artifact =~ ^hyprcachy-[a-zA-Z0-9@._+-]+/[a-zA-Z0-9._-]+$ && $artifact != */. && $artifact != */.. && -z $extra ]] || return 1
+        publication_target "$mode" "$destination" || return 1
+        [[ -f "$stage/check/build/$artifact" && ! -L "$stage/check/build/$artifact" ]] || return 1
+        owner=${artifact%%/*}
+        [[ $(pacman -Qqo -- "$destination") == "$owner" ]] || return 1
+        current=$(cd "$stage/check/build" && sha256sum -- "$artifact") || return 1
+        grep -qxF "$current" "$stage/artifacts.sha256" || return 1
+    done < "$stage/check/publications"
+    while IFS=$'\t' read -r artifact mode destination; do
+        publish_file "$stage/check/build/$artifact" "$mode" "$destination" || return 1
+    done < "$stage/check/publications"
 }

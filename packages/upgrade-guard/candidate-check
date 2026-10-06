@@ -65,16 +65,31 @@ cmp /check/expected-targets /check/targets
 cmp /check/expected-incoming /check/incoming
 pacman -Q | LC_ALL=C sort > /check/installed.expected
 ldconfig
-pactree --unique --linear hyprcachy-window-session > /check/dependencies
-grep -qx hyprcachy-window-session /check/dependencies
-source_dir=/usr/src/hyprcachy-window-session
 chmod 0755 /check
 mkdir -p /check/build /check/home
-chown 65534:65534 /check/build /check/home
+chown 65534:65534 /check/home
+chmod 0755 /check/build
 chmod 0700 /check/home
 run=(setpriv --reuid=65534 --regid=65534 --clear-groups --no-new-privs
     env -i PATH=/usr/bin LC_ALL=C HOME=/check/home)
-cd -- "$source_dir"
-# Compile only. Do not execute tests, load the plugin or start a compositor.
-timeout --kill-after=10s 300s "${run[@]}" make all BUILD_DIR=/check/build
+[[ $(< /check/protocol) == 1 ]]
+(cd /check; sha256sum --check --strict controls.sha256)
+# shellcheck source=gate-lib.sh
+source /check/gate-lib.sh
+# shellcheck source=components.sh
+source /check/components.sh
+actual=$(hash_controls /check)
+[[ $actual == "$(< /check/controls.sha256)" ]]
+chown -R 0:0 /check/adapters /check/input
+chmod -R a+rX,go-w /check/adapters /check/input
+while IFS= read -r name; do
+    [[ $name =~ ^hyprcachy-[a-zA-Z0-9@._+-]+$ ]]
+    mkdir "/check/build/$name"
+    chown 65534:65534 "/check/build/$name"
+    timeout --kill-after=10s 300s "${run[@]}" bash -p "/check/adapters/$name/adapter" build "/check/input/$name" "/check/build/$name"
+done < /check/components
+while IFS=$'\t' read -r artifact mode destination; do
+    publication_target "$mode" "$destination"
+    [[ $(pacman -Qqo -- "$destination") == "${artifact%%/*}" ]]
+done < /check/publications
 : > /check/success

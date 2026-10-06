@@ -1,0 +1,10 @@
+# Only retire this component's pre-adapter housekeeping units. The shared guard
+# owns and activates its separately named timer; never restart the desktop.
+post_upgrade() {
+    if (( $(vercmp "$2" 0.10.0) < 0 )) &&
+        ! systemd-detect-virt --quiet --chroot && systemd-notify --booted; then
+        systemctl stop hyprcachy-window-session-cleanup.timer hyprcachy-window-session-cleanup.service ||
+            echo 'Warning: stop the old window-session cleanup units manually.' >&2
+        systemctl daemon-reload
+    fi
+}

@@ -24,14 +24,16 @@ provide hibernation; that requires separately configured disk-backed swap.
 
 ## Optional window-session restoration
 
-Hyprcachy owns an experimental [native dwindle-tree/session plugin](plugins/window-session/).
-Setup builds its local pacman package without a fixed Hyprland version allowlist;
+Hyprcachy owns an experimental [native dwindle-tree/session plugin](packages/window-session/).
+Its implementation, packaging and upgrade integration live together under
+`packages/window-session/`. Setup builds its local pacman package without a fixed Hyprland version allowlist;
 its native plugin loads through a package-owned XDG autostart entry in the UWSM
 session, while restoration stays **disabled until explicitly enabled**. It uses Hyprland's embedded Lua
 runtime, not an external interpreter or daemon. Keep using `sudo pacman -Syu`
-or your usual pacman-based helper: hooks compile the plugin against relevant
+or your usual pacman-based helper: the independent
+[shared upgrade guard](packages/upgrade-guard/) owns hooks that compile the plugin against relevant
 incoming packages in a disposable Btrfs/nspawn build environment before pacman can
-commit. No tests, compositors or GPU access run during updates. Compilation failures
+commit. The Hyprland check is compile-only: no compositor or GPU access. Compilation failures
 block the transaction instead of disabling the existing plugin. Transaction identity
 and integrity checks remain mandatory; ambiguous or unsupported transactions fail
 explicitly. There is no separate upgrade command. Dotfiles only configure
@@ -47,9 +49,50 @@ To rebuild and install the plugin from this checkout, including uncommitted edit
 Run as your normal user, not with `sudo`. It uses `makepkg` for a clean rebuild
 and installation through normal pacman hooks, prompting for privilege when needed.
 It reinstalls even when the package version is unchanged. Build work directories
-are cleaned on success; the package archive remains available. Additional arguments
-are passed to `makepkg`. It does not reload the running plugin; log out/in after
-native code changes.
+are cleaned on success; package archives remain available. It builds and installs
+only window-session; a compatible guard must already be installed.
+Missing distribution prerequisites must be installed through your normal full system update;
+extra makepkg arguments are not accepted. It does not reload the running plugin;
+log out/in after native code changes.
+
+## Split tmux status and automatic rebuilds
+
+Setup also installs the [guarded tmux companion](packages/tmux/). It supplies a
+native top session bar and bottom window/status bar without replacing the stock
+`/usr/bin/tmux`. Dotfiles select the companion and configure the rows.
+
+Each component owns its upgrade adapter, sources and build/check instructions.
+The shared engine owns only frozen transaction replay, isolation, verification,
+publication and cleanup, under its own `upgrade-guard` paths.
+
+Run `./rebuild-tmux.sh` and reapply dotfiles. It builds and installs only the
+companion, requiring an already installed compatible guard. It never adds a
+window-session or guard package rebuild. Tmux does not depend on window-session
+or Hyprland. A new tmux server is required; the command neither restarts one nor
+restores over live sessions.
+
+Ordinary `pacman -Syu` updates rebuild the companion from the exact signed stock
+package's recipe, preserve distribution patches, and apply our patch in the
+same frozen Btrfs/nspawn transaction check. Private terminal checks verify the
+bars before the upgrade may commit. Unknown recipes, patch conflicts and failed
+checks stop the upgrade for review; automatic updates do not imply automatic
+patch repair. See the companion README for activation and recovery details.
+
+## Coordinated native update and migration
+
+```sh
+./update-native.sh
+```
+
+Run as your normal user to explicitly build and install **all three** local
+packages: upgrade guard, window-session and tmux companion. This is the command
+for migrating an installed old bundled guard or updating all native packages
+from this checkout. It includes both components even if not previously installed;
+use the component rebuild commands for single-package work after the guard is installed.
+All archives are built before one `sudo pacman -U` transaction. No live application
+is restarted, and ordinary pacman compatibility hooks remain enabled.
+This updates local code, not distribution packages; continue using `pacman -Syu`
+for system updates. Extra arguments are not accepted.
 
 ## Fresh installation — partitioning required
 
@@ -222,6 +265,9 @@ sudo ./setup.sh jackson default  # explicitly change machine profile
   `~/.local/state/dotfiles/machine`. Prompts from the available profiles on first use.
 - Runs dotfiles' `setup.sh` as the user; it applies configs and installs its pinned
   mise runtimes and editor tools. Requires internet; initial setup may take several minutes.
+- Builds and installs the window-session guard, then the tmux companion, as the
+  selected user. Native build tools are infrastructure dependencies; stock tmux
+  still comes from the dotfiles application manifest.
 - Replaces `/etc/greetd/config.toml` only if changed. Its previous contents are
   saved as `config.toml.hyprcachy-backup`, with older backups numbered.
 - Enables NetworkManager, greetd, and the graphical-session polkit service.

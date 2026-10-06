@@ -4,7 +4,7 @@ Description=Remove expired Hyprcachy preflight data
 [Service]
 Type=oneshot
 TimeoutStartSec=5min
-ExecStart=/usr/lib/hyprcachy/window-session/cleanup
+ExecStart=/usr/lib/hyprcachy/upgrade-guard/cleanup
 UMask=0077
 NoNewPrivileges=true
 Nice=19

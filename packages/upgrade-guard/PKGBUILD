@@ -1,0 +1,31 @@
+# Local package: review this checkout before building.
+pkgname=hyprcachy-upgrade-guard
+pkgver=0.2.0
+pkgrel=1
+pkgdesc='Frozen-transaction build and publication engine for registered native components'
+arch=('any')
+license=() # The repository has not declared a license.
+depends=('bash' 'coreutils' 'findutils' 'gawk' 'grep' 'libarchive'
+         'pacman' 'systemd' 'btrfs-progs' 'util-linux' 'procps-ng')
+install=upgrade-guard.install
+source=('gate-lib.sh' 'components.sh' 'preflight' 'transaction-gate' 'candidate-check' 'cleanup'
+        'upgrade-guard.install' 'hyprcachy-upgrade-cleanup.service'
+        'hyprcachy-upgrade-cleanup.timer' '00-hyprcachy-upgrade-incoming.hook'
+        '01-hyprcachy-upgrade-check.hook' '99-hyprcachy-upgrade-publish.hook' 'README.md')
+sha256sums=()
+for file in "${source[@]}"; do sha256sums+=('SKIP'); done
+
+package() {
+    for file in transaction-gate preflight candidate-check gate-lib.sh components.sh cleanup; do
+        install -Dm755 "$file" "$pkgdir/usr/lib/hyprcachy/upgrade-guard/$file"
+    done
+    for file in hyprcachy-upgrade-cleanup.service hyprcachy-upgrade-cleanup.timer; do
+        install -Dm644 "$file" "$pkgdir/usr/lib/systemd/system/$file"
+    done
+    install -d "$pkgdir/usr/lib/systemd/system/timers.target.wants"
+    ln -s ../hyprcachy-upgrade-cleanup.timer "$pkgdir/usr/lib/systemd/system/timers.target.wants/hyprcachy-upgrade-cleanup.timer"
+    for file in ./*.hook; do
+        install -Dm644 "$file" "$pkgdir/usr/share/libalpm/hooks/${file##*/}"
+    done
+    install -Dm644 README.md "$pkgdir/usr/share/doc/hyprcachy-upgrade-guard/README.md"
+}
