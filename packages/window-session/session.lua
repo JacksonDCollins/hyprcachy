@@ -531,8 +531,10 @@ function M.pair(records, windows, used, fallback, in_place)
 	return pairs, remaining
 end
 local function dispatch(action)
-	local result = hl.dispatch(action)
-	assert(result.ok, result.error or "Hyprland refused restoration")
+	-- Dispatcher objects require hl.dispatch on the main Lua state, not this coroutine.
+	local ok, result = coroutine.yield("dispatch", action)
+	assert(ok, result)
+	assert(result and result.ok, result and result.error or "Hyprland refused restoration")
 end
 function M.place(r, window)
 	local monitor = hl.get_monitor(r.monitor) or hl.get_active_monitor() or hl.get_monitors()[1]
@@ -753,11 +755,14 @@ function M.configure(options)
 		else
 			result = table.pack(coroutine.resume(M.task))
 		end
+		while result[1] and result[2] == "dispatch" do
+			result = table.pack(coroutine.resume(M.task, pcall(hl.dispatch, result[3])))
+		end
 		assert(result[1], result[2])
 		if coroutine.status(M.task) == "dead" then M.task, M.operation = nil, nil
 		else M.waiting = assert(result[2], "Session coroutine yielded without a file task") end
 	end
-	-- This timer only consumes completed jobs. No clock-budget retries or blocking waits.
+	-- Resume completed file work and dispatch requested actions; no clock-budget retries or blocking waits.
 	-- Register callbacks on Hyprland's main Lua state, never from a coroutine.
 	M.timer = hl.timer(function()
 		local ok, message = pcall(advance)
@@ -991,7 +996,7 @@ function M.start(options)
 					c.attempted[pair[1].class] = true
 				end
 				if not ok then
-					issue("placement failed: " .. pair[1].class)
+					issue("placement failed: " .. pair[1].class .. ": " .. tostring(err))
 					print("Window session: placement failed: " .. tostring(err))
 				end
 			end
@@ -1037,7 +1042,7 @@ function M.start(options)
 				if ws then
 					local restored, err = hl.plugin.window_session.restore(ws.id, tree, bindings)
 					if not restored then
-						issue("layout failed: workspace " .. name)
+						issue("layout failed: workspace " .. name .. ": " .. tostring(err))
 						print("Window session: tree not restored: " .. tostring(err))
 					end
 				else
@@ -1058,7 +1063,7 @@ function M.start(options)
 						})
 					)
 					if not ok then
-						issue("fullscreen failed: " .. r.class)
+						issue("fullscreen failed: " .. r.class .. ": " .. tostring(err))
 						print("Window session: fullscreen failed: " .. tostring(err))
 					end
 				end
@@ -1073,12 +1078,12 @@ function M.start(options)
 			for _, match in ipairs(floating) do
 				local ok, err = hl.plugin.window_session.raise_state(match.id, match.record.state)
 				if not ok then
-					issue("stacking failed: " .. match.record.class)
+					issue("stacking failed: " .. match.record.class .. ": " .. tostring(err))
 					print("Window session: stacking failed: " .. tostring(err))
 				end
 			end
 			for _, record in ipairs(c.pending) do
-				issue("missing: " .. record.class)
+				issue("unmatched: " .. record.class)
 			end
 			if c.reloading then
 				-- Recover checkpoint metadata without replaying placement or fullscreen on config reload.

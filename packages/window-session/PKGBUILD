@@ -1,7 +1,7 @@
 # Local package: source checksums are not a substitute for reviewing this checkout.
 pkgname=hyprcachy-window-session
 pkgver=0.11.0
-pkgrel=5
+pkgrel=7
 pkgdesc='Native dwindle session persistence with pre-transaction compilation checks'
 arch=('x86_64')
 license=() # The repository has not declared a license.

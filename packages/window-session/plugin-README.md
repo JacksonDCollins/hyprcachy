@@ -88,8 +88,12 @@ hyprctl repl 'return hyprcachy_window_session.save()' # queues an explicit check
 Startup discovery, snapshot reads/writes, archival, process-command reads, and
 snapshot encoding/decoding run on a native worker with its own Lua state. Only
 copied plain data crosses threads; live windows and compositor APIs stay on the
-main thread. The controller awaits completed jobs rather than blocking a callback,
-increasing Hyprland's watchdog limit, or retrying a function against elapsed time.
+main thread. The controller yields dispatcher objects to its main-state timer,
+which invokes `hl.dispatch` and returns the result to the suspended coroutine.
+Hyprland's opaque dispatcher objects are never called directly, and no dispatcher
+runs on the file worker. The controller awaits completed jobs rather than blocking
+a callback, increasing Hyprland's watchdog limit, or retrying a function against
+elapsed time.
 Slow storage delays readiness/checkpoint completion, not the compositor callback.
 Application and autostart discovery finish before restore matching begins.
 
@@ -97,9 +101,15 @@ Application and autostart discovery finish before restore matching begins.
 `hyprcachy_window_session.task == nil` and check `.status` for errors before logout;
 `save()` returning does not mean the checkpoint is committed. Cycle closes windows
 only after both recovery checkpoints have been written successfully. Concurrent
-manual operations are rejected as busy. Errors stop the controller visibly;
+manual operations are rejected as busy. Task errors stop the controller visibly;
 failed writes do not replace the last complete checkpoint. Reload cancels obsolete
 queued tasks; plugin shutdown joins the worker before unloading its code.
+
+Restore reports include the underlying placement/layout errors. An `unmatched`
+record has no accepted window match; it does not necessarily mean the application
+failed to open. Read the last report with `hyprcachy_window_session.last_restore`.
+An incomplete replay can finish and resume recording the current desktop;
+`previous.tsv` preserves that login's input snapshot until the next fresh login.
 
 Launch keys are exact initial window classes (`hyprctl clients`); values are
 argument arrays, desktop-entry IDs, or `false`. Launch priority is an explicit
