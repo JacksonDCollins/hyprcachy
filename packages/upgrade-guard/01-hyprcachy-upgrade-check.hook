@@ -8,6 +8,8 @@ Target = *
 [Action]
 Description = Build guarded native components against incoming packages before committing
 When = PreTransaction
+# Source preparation needs the host network; candidate builds remain isolated.
+NetworkAccess = allowed
 Exec = /usr/lib/hyprcachy/upgrade-guard/transaction-gate pre
 NeedsTargets
 AbortOnFail

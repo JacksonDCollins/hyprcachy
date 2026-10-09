@@ -247,6 +247,17 @@ sudo ./setup.sh jackson default  # explicitly change machine profile
 `setup.sh`:
 
 - Requires an existing non-root account and configured CachyOS repositories.
+- On an existing guarded system, builds and installs the current local guard
+  **before the first system upgrade**, so that upgrade uses current guard code.
+  Legacy bundled guards migrate with window-session in the same
+  transaction. Build prerequisites must already be satisfied; no hooks are
+  disabled. The old guard still checks this bootstrap and can stop it on failure.
+  Fresh installations skip the bootstrap and install prerequisites first.
+  Old standalone guards missing CachyOS's `NetworkAccess = allowed` declaration
+  receive a temporary, scoped preflight-hook override during bootstrap; existing
+  administrative overrides are never overwritten. It is cleaned on success or
+  failure. Only source preparation gets network access; candidate builds stay
+  offline. See the guard documentation for interrupted-bootstrap recovery.
 - Performs a full `pacman -Syu --needed --noconfirm` transaction, including system
   upgrades and installation of the packages in its `PACKAGES` array. Review this
   list before running. Removing an entry never uninstalls a package.
@@ -265,9 +276,11 @@ sudo ./setup.sh jackson default  # explicitly change machine profile
   `~/.local/state/dotfiles/machine`. Prompts from the available profiles on first use.
 - Runs dotfiles' `setup.sh` as the user; it applies configs and installs its pinned
   mise runtimes and editor tools. Requires internet; initial setup may take several minutes.
-- Builds and installs the window-session guard, then the tmux companion, as the
-  selected user. Native build tools are infrastructure dependencies; stock tmux
-  still comes from the dotfiles application manifest.
+- Builds window-session and tmux against the updated system as the selected
+  user, then installs their archives together. Fresh installations include the
+  shared guard in that transaction; an already bootstrapped guard is not rebuilt
+  again. Native build tools are infrastructure dependencies; stock tmux still
+  comes from the dotfiles application manifest.
 - Replaces `/etc/greetd/config.toml` only if changed. Its previous contents are
   saved as `config.toml.hyprcachy-backup`, with older backups numbered.
 - Enables NetworkManager, greetd, and the graphical-session polkit service.

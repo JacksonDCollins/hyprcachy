@@ -83,6 +83,9 @@ changed source origin, unrecognized downstream recipe, unsigned local tmux
 archive, patch conflict or failed build/check stops the upgrade for review. An
 offline update also needs the required sources to be available; this prototype
 fetches them for each guarded build rather than maintaining another source cache.
+Recipe downloads get two bounded retries, including DNS failures. If no recipe
+was downloaded, the error reports a download failure rather than a hash mismatch;
+fix connectivity and retry the original command without disabling hooks.
 Initial/local companion builds need the exact signed installed tmux archive in
 pacman's cache, or the same version still available from the configured mirror.
 

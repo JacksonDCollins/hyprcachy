@@ -81,6 +81,114 @@ if [[ -e /etc/systemd/system/display-manager.service ]] &&
     die "Another login manager is enabled. Disable it before switching to greetd."
 fi
 
+# Shared by the early guard bootstrap and the normal post-upgrade installation.
+# Keep this in setup.sh: the two-script ISO path has no other local helpers.
+install_native_packages() (
+    set -euo pipefail
+    local component source_dir metadata requirements missing built
+    local build sources with_guard=false
+    local hook hook_dirs directory default_hooks=false network_hook='' network_copy='' network_checksum=''
+    local -a required packages=()
+    for component in "$@"; do
+        [[ $component != upgrade-guard ]] || with_guard=true
+    done
+    if ! missing=$(pacman -T base-devel); then
+        die "Native package builds require installed base-devel tools: $missing"
+    fi
+    build=$(mktemp -d /tmp/hyprcachy-native.XXXXXX)
+    trap '
+        if [[ -n "$network_copy" ]]; then
+            if [[ "$network_hook" -ef "$network_copy" && $(sha256sum -- "$network_copy") == "$network_checksum" ]]; then rm -f -- "$network_hook"; fi
+            rm -f -- "$network_copy"
+        fi
+        rm -rf -- "$build"
+    ' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM HUP
+    chown "$uid:$(id -g "$user")" "$build"
+    if [[ -d "$repo_dir/packages" ]]; then
+        sources="$build/packages"
+        mkdir "$sources"
+        for component in "$@"; do
+            cp -R -- "$repo_dir/packages/$component" "$sources/$component"
+        done
+        chown -R "$uid:$(id -g "$user")" "$build"
+    else
+        # Fetch only this project's published sources, never run dotfiles as root.
+        runuser -u "$user" -- env -u BASH_ENV -u ENV HOME="$user_home" \
+            git clone --depth 1 --branch main https://github.com/JacksonDCollins/hyprcachy.git "$build/repo"
+        sources="$build/repo/packages"
+    fi
+    for component in "$@"; do
+        source_dir="$sources/$component"
+        metadata=$(runuser -u "$user" -- env -u BASH_ENV -u ENV HOME="$user_home" USER="$user" LOGNAME="$user" \
+            /usr/bin/bash -c 'cd -- "$1" && exec makepkg --printsrcinfo' -- "$source_dir")
+        requirements=$(awk -v with_guard="$with_guard" '
+            $1 ~ /^(make|check)?depends(_.*)?$/ {
+                if (with_guard == "true" && $3 ~ /^hyprcachy-upgrade-guard([<>=]|$)/) next
+                print $3
+            }' <<< "$metadata")
+        [[ -n $requirements ]] || die 'Cannot determine native package prerequisites.'
+        mapfile -t required <<< "$requirements"
+        if ! missing=$(pacman -T "${required[@]}"); then
+            die "Missing prerequisites for $component: $missing. Cannot build safely before installation."
+        fi
+        runuser -u "$user" -- env -u BASH_ENV -u ENV HOME="$user_home" USER="$user" LOGNAME="$user" \
+            /usr/bin/bash -c 'cd -- "$1" && exec makepkg --cleanbuild --force --nodeps --noconfirm' -- "$source_dir"
+        built=$(runuser -u "$user" -- env -u BASH_ENV -u ENV HOME="$user_home" \
+            /usr/bin/bash -c 'cd -- "$1" && exec makepkg --packagelist' -- "$source_dir")
+        [[ $built != *$'\n'* && -f $built ]] || die 'Expected exactly one built native package.'
+        packages+=("$built")
+    done
+    # Pacman reads PRE hooks before installing the corrected package. Give only
+    # the old preflight hook its declared source-fetch access during bootstrap.
+    hook=/usr/share/libalpm/hooks/01-hyprcachy-upgrade-check.hook
+    if $with_guard && [[ -f "$hook" ]] && ! grep -Eq '^NetworkAccess[[:space:]]*=[[:space:]]*allowed[[:space:]]*$' "$hook"; then
+        [[ ! -L "$hook" && $(pacman -Qqo -- "$hook") == hyprcachy-upgrade-guard ]] ||
+            die 'Cannot identify the installed guard hook for network-access migration.'
+        hook_dirs=$(pacman-conf HookDir)
+        while IFS= read -r directory; do
+            directory=${directory%/}
+            [[ $directory != /etc/pacman.d/hooks ]] || default_hooks=true
+            [[ ! -e "$directory/${hook##*/}" && ! -L "$directory/${hook##*/}" ]] ||
+                die 'An administrative guard-hook override already exists; review its NetworkAccess setting before setup.'
+        done <<< "$hook_dirs"
+        $default_hooks || die 'The default administrative hook directory is unavailable.'
+        grep -qx '\[Action\]' "$hook" || die 'Invalid installed guard hook.'
+        mkdir -p /etc/pacman.d/hooks
+        network_hook="/etc/pacman.d/hooks/${hook##*/}"
+        network_copy=$(mktemp /etc/pacman.d/hooks/.hyprcachy-network.XXXXXX)
+        awk '/^\[Action\]$/ { print; print "NetworkAccess = allowed"; next }
+             !/^NetworkAccess[[:space:]]*=/ { print }' "$hook" > "$network_copy"
+        chmod 0644 "$network_copy"
+        network_checksum=$(sha256sum -- "$network_copy")
+        # Hard-link without overwriting a concurrently created administrator file.
+        ln -- "$network_copy" "$network_hook"
+        echo 'Temporarily allowing source downloads for the old guard preflight hook.'
+    fi
+    # All archives are ready; hooks/checks stay enabled and builds remain offline.
+    pacman -U --noconfirm -- "${packages[@]}"
+)
+
+# Repair an installed guard before it can block the first distribution upgrade.
+# A fresh target has no guard and gets its build prerequisites from that upgrade.
+native_components=(upgrade-guard window-session tmux)
+bootstrap_components=()
+if [[ $(pacman -Qq -- hyprcachy-upgrade-guard 2>/dev/null || true) == hyprcachy-upgrade-guard ]]; then
+    bootstrap_components=(upgrade-guard)
+fi
+if installed=$(pacman -Q -- hyprcachy-window-session 2>/dev/null) &&
+    [[ $installed == hyprcachy-window-session\ * ]] &&
+    (( $(vercmp "${installed#* }" 0.10.0) < 0 )); then
+    # Retire the old component-owned hooks together with the new guard install.
+    bootstrap_components=(upgrade-guard window-session)
+fi
+if (( ${#bootstrap_components[@]} )); then
+    echo 'Updating the installed native upgrade guard before the system upgrade...'
+    install_native_packages "${bootstrap_components[@]}"
+    native_components=(window-session tmux)
+fi
+
 # Upgrade together with dependency installation; never perform a partial Arch upgrade.
 install_packages() {
     pacman -Syu --needed --noconfirm -- "$@"
@@ -193,42 +301,8 @@ done
 bash ./setup.sh "$profile"
 ' -- "$profile"
 
-# Build the independent engine and components as the user, then install together.
-# Two-script ISO installs do not carry these sources, so fetch this same project's
-# published source as the user in that case. Never execute dotfiles scripts as root.
-plugin_build=$(mktemp -d /tmp/hyprcachy-plugin.XXXXXX)
-trap 'rm -rf -- "$plugin_build"' EXIT
-chown "$uid:$(id -g "$user")" "$plugin_build"
-if [[ -d "$repo_dir/packages/window-session" ]]; then
-    mkdir -p "$plugin_build/packages"
-    cp -R -- "$repo_dir/packages/window-session" "$plugin_build/packages/window-session"
-    cp -R -- "$repo_dir/packages/tmux" "$plugin_build/packages/tmux"
-    cp -R -- "$repo_dir/packages/upgrade-guard" "$plugin_build/packages/upgrade-guard"
-    chown -R "$uid:$(id -g "$user")" "$plugin_build"
-    plugin_source="$plugin_build/packages/window-session"
-    tmux_source="$plugin_build/packages/tmux"
-    guard_source="$plugin_build/packages/upgrade-guard"
-else
-    runuser -u "$user" -- env -u BASH_ENV -u ENV HOME="$user_home" \
-        git clone --depth 1 --branch main https://github.com/JacksonDCollins/hyprcachy.git "$plugin_build/repo"
-    plugin_source="$plugin_build/repo/packages/window-session"
-    tmux_source="$plugin_build/repo/packages/tmux"
-    guard_source="$plugin_build/repo/packages/upgrade-guard"
-fi
-# Retire the old bundled guard in the same transaction that installs the new
-# engine/adapters, avoiding parallel old and new pre-transaction hooks.
-native_packages=()
-for source_dir in "$guard_source" "$plugin_source" "$tmux_source"; do
-    runuser -u "$user" -- env -u BASH_ENV -u ENV HOME="$user_home" USER="$user" LOGNAME="$user" \
-        /usr/bin/bash -c 'cd -- "$1" && exec makepkg --cleanbuild --force --nodeps --noconfirm' -- "$source_dir"
-    mapfile -t built_packages < <(runuser -u "$user" -- env -u BASH_ENV -u ENV HOME="$user_home" \
-        /usr/bin/bash -c 'cd -- "$1" && exec makepkg --packagelist' -- "$source_dir")
-    (( ${#built_packages[@]} == 1 )) && [[ -f ${built_packages[0]} ]] || die 'Expected exactly one built native package.'
-    native_packages+=("${built_packages[0]}")
-done
-pacman -U --noconfirm -- "${native_packages[@]}"
-rm -rf -- "$plugin_build"
-trap - EXIT
+# Build components against the updated system; fresh installs include the guard.
+install_native_packages "${native_components[@]}"
 
 # Replace only this owned system config; preserve each changed version first.
 workdir=$(mktemp -d)

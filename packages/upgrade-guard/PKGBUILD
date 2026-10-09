@@ -1,7 +1,7 @@
 # Local package: review this checkout before building.
 pkgname=hyprcachy-upgrade-guard
 pkgver=0.2.0
-pkgrel=1
+pkgrel=3
 pkgdesc='Frozen-transaction build and publication engine for registered native components'
 arch=('any')
 license=() # The repository has not declared a license.

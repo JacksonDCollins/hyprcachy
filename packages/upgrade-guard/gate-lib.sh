@@ -86,17 +86,21 @@ component_active() {
 # Provider/replacement menus can contain the SAME name from different repositories.
 # Matching target names alone cannot prove which build the user selected.
 verify_provider_identity() {
-    local name=$1 version=$2 hash=$3 archive=$4 mode=$5 requirements=$6 explicit rows candidate candidate_version candidate_hash extra metadata key equal replaced replacement=false provides matched
+    local name=$1 version=$2 hash=$3 archive=$4 mode=$5 requirements=$6 explicit rows candidate candidate_version candidate_hash extra metadata key equal replaced replacement=false provides matched installed
     shift 6
     for explicit in "$@"; do [[ $explicit != "$name" ]] || return 0; done
     metadata=$(bsdtar -xOf "$archive" --fast-read .PKGINFO) || return 1
     while read -r key equal replaced extra; do
         [[ $key == replaces && $equal == = ]] || continue
         replaced=${replaced%%[<>=]*}
-        if [[ $replaced != "$name" ]] && pacman -Q -- "$replaced" > /dev/null 2>&1; then replacement=true; break; fi
+        # Queries can resolve a provided alias (p7zip -> 7zip); require the
+        # actual installed name, not merely a successful dependency lookup.
+        if [[ $replaced != "$name" ]] && installed=$(pacman -Qq -- "$replaced" 2>/dev/null) && [[ $installed == "$replaced" ]]; then
+            replacement=true; break
+        fi
     done <<< "$metadata"
     if [[ $mode != all ]] && ! $replacement; then
-        pacman -Q -- "$name" > /dev/null 2>&1 && return 0
+        if installed=$(pacman -Qq -- "$name" 2>/dev/null) && [[ $installed == "$name" ]]; then return 0; fi
         grep -q '^provides = ' <<< "$metadata" || return 0
         if [[ -n $requirements ]]; then
             # Literal targets/dependencies use repository priority, not a provider menu.

@@ -48,9 +48,12 @@ upstream=${version%-*}
 release=${version##*-}
 base=https://gitlab.archlinux.org/archlinux/packaging/packages/tmux
 matched=false
+downloaded=false
 for ref in "$upstream-${release%.*}" "$version"; do
     if ! curl --silent --show-error --fail --location --proto '=https' --proto-redir '=https' \
-        --max-time 30 --max-filesize 1048576 --output "$out/recipe.raw" -- "$base/-/raw/$ref/PKGBUILD"; then continue; fi
+        --connect-timeout 10 --max-time 30 --retry 2 --retry-all-errors --retry-delay 1 --retry-max-time 30 \
+        --max-filesize 1048576 --output "$out/recipe.raw" -- "$base/-/raw/$ref/PKGBUILD"; then continue; fi
+    downloaded=true
     # CachyOS's optimized rebuild changes pkgrel. The signed digest must still
     # match exactly; unknown downstream changes require review, never guessing.
     awk -v rel="$release" '/^pkgrel=/ { $0="pkgrel=" rel } { print }' "$out/recipe.raw" > "$out/PKGBUILD"
@@ -59,6 +62,10 @@ for ref in "$upstream-${release%.*}" "$version"; do
     matched=true
     break
 done
+$downloaded || {
+    echo "Could not download any packaging recipe for signed tmux $version; check the curl errors above and retry. No recipe hash comparison was possible." >&2
+    exit 1
+}
 $matched || { echo 'No packaging recipe matches the signed tmux build; refusing an approximate rebuild.' >&2; exit 1; }
 # Include any packaging patches/files. makepkg verifies their declared checksums
 # offline. New source origins are intentionally not fetched automatically.
