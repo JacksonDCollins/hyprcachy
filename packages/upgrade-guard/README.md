@@ -58,14 +58,10 @@ before the candidate starts. Incoming/publication hooks remain isolated, and the
 candidate still uses `systemd-nspawn --private-network`. Do not disable pacman's
 network sandbox globally to fix source preparation.
 
-For an installed old guard missing this declaration, `setup.sh` temporarily
-overrides that one hook during bootstrap, changing only its network-access
-setting. It does not replace an existing administrative override, and removes its
-own unchanged override on success, failure or handled interruption. SIGKILL or
-power loss can leave `/etc/pacman.d/hooks/01-hyprcachy-upgrade-check.hook` and its
-`.hyprcachy-network.*` hard link behind; inspect them before manual removal and
-rerunning setup. The old checks still execute; only source-fetch connectivity
-is permitted. Installing the updated package supplies the permanent declaration.
+The supported installed guard must already provide this declaration. Setup does
+not repair obsolete hook formats or create administrative overrides. An older
+guard can block installation before reboot; that requires explicit repair, not
+bypassing the current safety checks.
 
 1. Record the real incoming/removed target sets while pacman holds its lock.
 2. Re-prepare without refreshing databases or downloading packages again.
@@ -104,20 +100,19 @@ First installation of the engine cannot retroactively execute its pre-hooks.
 
 The daily timer (up to one hour of jitter) removes inactive staging directories
 older than seven days under `/var/cache/hyprcachy-preflight.*`. This generic cache
-prefix also covers retained older staging data. It checks root ownership, mode,
+prefix identifies the guard's staging data. It checks root ownership, mode,
 processes, locks, mounts and nested subvolumes. It never removes pacman's lock,
 application snapshots or unrelated caches. Unexpected data requires inspection.
 
 `./update-native.sh` explicitly builds and installs the engine and both components
 in one transaction. `setup.sh` first bootstraps an installed guard before its
-system upgrade (including window-session when migrating an old bundled guard),
-then builds the components against the updated system. Fresh setup installs
+system upgrade, then builds the components against the updated system. Fresh setup installs
 prerequisites first and all three local packages together. Bootstrap keeps normal
-hooks enabled and stops if prerequisites or the old guard's checks fail. Component-only
+hooks enabled and stops if prerequisites or the installed guard's checks fail. Component-only
 `rebuild-plugin.sh` / `rebuild-tmux.sh` require a compatible installed guard;
-they neither rebuild it nor implicitly migrate another package.
-Migration from the original bundled guard belongs to the previously bundled
-component, not this engine. No component is a dependency of the engine.
+they neither rebuild it nor update another package. Reboot after installation.
+Automatic migration from obsolete bundled guards is not supported. No component
+is a dependency of the engine.
 
 ```sh
 systemctl list-timers hyprcachy-upgrade-cleanup.timer

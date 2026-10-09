@@ -4,7 +4,7 @@ set -euo pipefail
 export PATH=/usr/bin LC_ALL=C
 case ${1:-} in
 watch)
-    for root in hyprland lua gcc make pkgconf; do
+    for root in hyprland lua gcc make pkgconf wayland; do
         # Linear output hides resolved providers behind dependency expressions.
         graph=$(pactree --graph --unique "$root")
         awk -F '"' '/ -> / {

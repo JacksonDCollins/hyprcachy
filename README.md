@@ -27,8 +27,10 @@ provide hibernation; that requires separately configured disk-backed swap.
 Hyprcachy owns an experimental [native dwindle-tree/session plugin](packages/window-session/).
 Its implementation, packaging and upgrade integration live together under
 `packages/window-session/`. Setup builds its local pacman package without a fixed Hyprland version allowlist;
-its native plugin loads through a package-owned XDG autostart entry in the UWSM
-session, while restoration stays **disabled until explicitly enabled**. It uses Hyprland's embedded Lua
+dotfiles call its packaged `init.lua` configuration function, which declares native
+loading before session readiness and application autostarts. Minimal protocol-state loading
+happens during native initialization; desktop discovery stays asynchronous.
+Restoration stays **disabled until explicitly enabled**. It uses Hyprland's embedded Lua
 runtime, not an external interpreter or daemon. Keep using `sudo pacman -Syu`
 or your usual pacman-based helper: the independent
 [shared upgrade guard](packages/upgrade-guard/) owns hooks that compile the plugin against relevant
@@ -36,8 +38,10 @@ incoming packages in a disposable Btrfs/nspawn build environment before pacman c
 commit. The Hyprland check is compile-only: no compositor or GPU access. Compilation failures
 block the transaction instead of disabling the existing plugin. Transaction identity
 and integrity checks remain mandatory; ambiguous or unsupported transactions fail
-explicitly. There is no separate upgrade command. Dotfiles only configure
-`hl.plugin.window_session.config(...)`; no Lua loader block is needed. Compilation does not prove runtime correctness; read the
+explicitly. There is no separate upgrade command. Dotfiles use one call:
+`dofile("/usr/share/hyprcachy/window-session/init.lua")({ ... })`.
+The package owns the loading logic; install it before using the call. No startup
+service or autostart ordering override is needed. Compilation does not prove runtime correctness; read the
 plugin documentation and validate restoration separately before relying on it.
 
 To rebuild and install the plugin from this checkout, including uncommitted edits:
@@ -78,19 +82,20 @@ bars before the upgrade may commit. Unknown recipes, patch conflicts and failed
 checks stop the upgrade for review; automatic updates do not imply automatic
 patch repair. See the companion README for activation and recovery details.
 
-## Coordinated native update and migration
+## Coordinated native update
 
 ```sh
 ./update-native.sh
 ```
 
 Run as your normal user to explicitly build and install **all three** local
-packages: upgrade guard, window-session and tmux companion. This is the command
-for migrating an installed old bundled guard or updating all native packages
-from this checkout. It includes both components even if not previously installed;
+packages: upgrade guard, window-session and tmux companion. This updates all
+native packages from this checkout. It includes both components even if not previously installed;
 use the component rebuild commands for single-package work after the guard is installed.
 All archives are built before one `sudo pacman -U` transaction. No live application
-is restarted, and ordinary pacman compatibility hooks remain enabled.
+is restarted, and ordinary pacman compatibility hooks remain enabled. **Reboot
+after installation.** Automatic migration from obsolete bundled guards is not
+supported; a reboot cannot repair a guard that blocks the installation itself.
 This updates local code, not distribution packages; continue using `pacman -Syu`
 for system updates. Extra arguments are not accepted.
 
@@ -249,15 +254,12 @@ sudo ./setup.sh jackson default  # explicitly change machine profile
 - Requires an existing non-root account and configured CachyOS repositories.
 - On an existing guarded system, builds and installs the current local guard
   **before the first system upgrade**, so that upgrade uses current guard code.
-  Legacy bundled guards migrate with window-session in the same
-  transaction. Build prerequisites must already be satisfied; no hooks are
-  disabled. The old guard still checks this bootstrap and can stop it on failure.
+  Build prerequisites must already be satisfied; no hooks are disabled. The
+  installed guard still checks this bootstrap and can stop it on failure.
   Fresh installations skip the bootstrap and install prerequisites first.
-  Old standalone guards missing CachyOS's `NetworkAccess = allowed` declaration
-  receive a temporary, scoped preflight-hook override during bootstrap; existing
-  administrative overrides are never overwritten. It is cleaned on success or
-  failure. Only source preparation gets network access; candidate builds stay
-  offline. See the guard documentation for interrupted-bootstrap recovery.
+  There are no bundled-guard migration branches or temporary overrides for old
+  hook formats. The supported guard declares preflight network access itself;
+  candidate builds remain offline.
 - Performs a full `pacman -Syu --needed --noconfirm` transaction, including system
   upgrades and installation of the packages in its `PACKAGES` array. Review this
   list before running. Removing an entry never uninstalls a package.

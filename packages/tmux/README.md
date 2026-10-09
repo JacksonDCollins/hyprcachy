@@ -20,11 +20,11 @@ cd ~/dotfiles
 
 Tmux depends on [hyprcachy-upgrade-guard](../upgrade-guard/), not on the
 window-session plugin or Hyprland. This command builds and installs only the
-companion; it does not rebuild the guard or migrate another component. Missing
+companion; it does not rebuild the guard or update another component. Missing
 prerequisites (including the guard's required version) stop the command.
 Use `./update-native.sh` to explicitly install/update all three local packages,
-including migration of an old window-session bundled guard. This coordinated
-command also installs window-session if absent; it is not a tmux-only install.
+then reboot. This coordinated command also installs window-session if absent;
+it is not a tmux-only install.
 Install missing distribution prerequisites through your normal full system update.
 
 These commands require your approval/password for package installation. They do

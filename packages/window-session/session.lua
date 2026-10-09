@@ -1,6 +1,6 @@
 -- Hyprcachy-owned controller, configured through hl.plugin.window_session.config.
 local M = { status = "not started", restoring = false, fullscreen_layouts = {} }
-local header = "hyprcachy-window-session-v7\n"
+local header = "hyprcachy-window-session-v8\n"
 local function quote(s)
 	assert(type(s) == "string" and not s:find("\0", 1, true), "Invalid command argument")
 	return "'" .. s:gsub("'", "'\\''") .. "'"
@@ -37,7 +37,16 @@ local function validate_command(command)
 	end
 	assert(argv[1] ~= "" and size <= 65536, "Command is empty or exceeds 64 KiB")
 end
+local file_worker = hl.plugin.window_session.file_worker == true
+local function file_task(operation, ...)
+	assert(coroutine.isyieldable(), "File work requires the asynchronous session controller")
+	local id = assert(hl.plugin.window_session.file_submit(operation, ...))
+	local result = table.pack(coroutine.yield(id))
+	assert(result[1], result[2])
+	return table.unpack(result, 2, result.n)
+end
 local function read(file)
+	if not file_worker then return file_task("read", file) end
 	local f, err, code = io.open(file, "r")
 	if not f then
 		if code == 2 then
@@ -51,11 +60,27 @@ local function read(file)
 	return value
 end
 local function write(file, text)
+	if not file_worker then return file_task("write", file, text) end
 	local f = assert(io.open(file .. ".tmp", "w"))
 	local ok, err = f:write(text)
 	local closed, close_err = f:close()
 	assert(ok and closed, err or close_err)
 	assert(os.rename(file .. ".tmp", file))
+end
+local function valid_identity(value)
+	if type(value) ~= "string" or #value ~= 129 then return false end
+	local session, name = value:match("^([0-9a-f]+)/([0-9a-f]*)$")
+	return session ~= nil and #session == 64 and #name == 64
+end
+local function identity(window)
+	local current, restored, managed = hl.plugin.window_session.identity(tostring(window.stable_id))
+	assert(type(managed) == "boolean", restored or "Cannot read protocol window identity")
+	assert(current == nil or valid_identity(current), "Invalid live protocol identity")
+	assert(restored == nil or valid_identity(restored), "Invalid live restore identity")
+	return current, restored, managed
+end
+local function state_dir()
+	return (os.getenv("XDG_STATE_HOME") or assert(os.getenv("HOME")) .. "/.local/state") .. "/hyprcachy/window-session"
 end
 local function fingerprint(window)
 	-- Non-cryptographic matching hint, not encryption. Never save plaintext titles.
@@ -95,7 +120,10 @@ function M.snapshot(windows, ignored)
 	for _, window in ipairs(windows) do
 		if eligible(window, ignored) then
 			local x, y, w, h = bounds(window.monitor)
+			local current, _, managed = identity(window)
+			assert(not managed or current, "Protocol session is inactive; snapshot not saved")
 			records[#records + 1] = {
+				identity = current,
 				class = class(window),
 				title = fingerprint(window),
 				workspace = window.workspace.config_name,
@@ -236,7 +264,7 @@ end
 function M.capture(ignored, launch, desktops)
 	local windows = hl.get_windows()
 	local records, topology, slots = M.snapshot(windows, ignored)
-	local trees, seen = {}, {}
+	local trees, seen, commands = {}, {}, {}
 	M.capture_errors = {}
 	for _, window in ipairs(windows) do
 		local slot, app = slots[tostring(window.stable_id)], class(window)
@@ -253,11 +281,7 @@ function M.capture(ignored, launch, desktops)
 			end
 		end
 		if slot and launch[app] == nil and not desktops[app:lower()] then
-			local command, err = hl.plugin.window_session.process_command(window.pid)
-			records[tonumber(slot)].command = command
-			if err then
-				M.capture_errors[#M.capture_errors + 1] = app .. " command: " .. err
-			end
+			commands[#commands + 1] = { slot = slot, pid = window.pid, id = tostring(window.stable_id), app = app }
 		end
 		local ws = window.workspace
 		if eligible(window, ignored) and not window.floating and not seen[ws.config_name] then
@@ -283,11 +307,26 @@ function M.capture(ignored, launch, desktops)
 			end
 		end
 	end
-	return records, topology, trees, windows, M.capture_fullscreen(records, slots, trees, windows)
+	local fullscreen = M.capture_fullscreen(records, slots, trees, windows)
+	if #commands > 0 then
+		-- Capture live layout atomically before yielding; the worker sees only copied PID requests.
+		local results = file_task("commands", commands)
+		local live = {}
+		for _, window in ipairs(hl.get_windows()) do live[tostring(window.stable_id)] = window.pid end
+		for i, request in ipairs(commands) do
+			assert(live[request.id] == request.pid, "Window closed during command capture; snapshot not saved")
+			records[tonumber(request.slot)].command = results[i].command
+			if results[i].error then
+				M.capture_errors[#M.capture_errors + 1] = request.app .. " command: " .. results[i].error
+			end
+		end
+	end
+	return records, topology, trees, windows, fullscreen
 end
 function M.encode(records, trees, fullscreen)
+	if not file_worker then return file_task("encode", records, trees, fullscreen) end
 	validate_fullscreens(fullscreen or {}, records, trees or {})
-	local lines = { header }
+	local lines, identities = { header }, {}
 	for slot, r in ipairs(records) do
 		lines[#lines + 1] = table.concat({
 			hex(r.class),
@@ -305,6 +344,11 @@ function M.encode(records, trees, fullscreen)
 		}, "\t") .. "\n"
 		assert(r.state, "Window state capture failed: " .. r.class .. "; snapshot not saved")
 		lines[#lines + 1] = "S\t" .. slot .. "\t" .. hex(r.state) .. "\n"
+		if r.identity then
+			assert(valid_identity(r.identity) and not identities[r.identity], "Duplicate/invalid protocol identity")
+			identities[r.identity] = true
+			lines[#lines + 1] = "I\t" .. slot .. "\t" .. r.identity .. "\n"
+		end
 		if r.command then
 			validate_command(r.command)
 			local fields = { "C", tostring(slot), hex(r.command.exe), hex(r.command.cwd) }
@@ -338,6 +382,7 @@ function M.encode(records, trees, fullscreen)
 	return text
 end
 function M.decode(text)
+	if not file_worker then return file_task("decode", text) end
 	if text == nil then
 		return {}, {}, {}
 	end
@@ -345,13 +390,18 @@ function M.decode(text)
 		text:sub(1, #header) == header,
 		"Incompatible session snapshot; leaving it untouched. Start with a fresh snapshot."
 	)
-	local records, trees, fullscreen = {}, {}, {}
+	local records, trees, fullscreen, identities = {}, {}, {}, {}
 	for line in text:sub(#header + 1):gmatch("[^\n]+") do
 		local f = {}
 		for field in (line .. "\t"):gmatch("([^\t]*)\t") do
 			f[#f + 1] = field
 		end
-		if f[1] == "C" then
+		if f[1] == "I" then
+			assert(#f == 3 and f[2]:match("^[1-9]%d*$") and valid_identity(f[3]), "Invalid protocol identity record")
+			local record = records[tonumber(f[2])]
+			assert(record and not record.identity and not identities[f[3]], "Duplicate/unknown protocol window")
+			record.identity, identities[f[3]] = f[3], true
+		elseif f[1] == "C" then
 			assert(#f >= 5 and #f <= 260 and f[2]:match("^[1-9]%d*$"), "Invalid saved command record")
 			local record = records[tonumber(f[2])]
 			assert(record and not record.command, "Duplicate/unknown command window")
@@ -444,16 +494,25 @@ function M.decode(text)
 	validate_fullscreens(fullscreen, records, trees)
 	return records, trees, fullscreen
 end
-function M.pair(records, windows, used, fallback)
-	local pairs, matched = {}, {}
-	for pass = 1, fallback and 2 or 1 do
+function M.pair(records, windows, used, fallback, in_place)
+	local pairs, matched, identities = {}, {}, {}
+	for _, window in ipairs(windows) do
+		local current, restored, managed = identity(window)
+		-- Startup uses restore lineage. Reload recovery can also refer to a
+		-- checkpoint taken under the current capture identity.
+		identities[window] = { key = restored or current, current = in_place and current or nil, managed = managed }
+	end
+	for pass = 1, fallback and 3 or 2 do
 		for i, record in ipairs(records) do
 			if not matched[i] then
 				for _, window in ipairs(windows) do
 					if
 						not used[tostring(window.stable_id)]
-						and class(window) == record.class
-						and (pass == 2 or fingerprint(window) == record.title)
+						and ((pass == 1 and record.identity
+								and (identities[window].key == record.identity or identities[window].current == record.identity))
+							or (pass > 1 and not record.identity and not identities[window].managed
+								and class(window) == record.class
+								and (pass == 3 or fingerprint(window) == record.title)))
 					then
 						pairs[#pairs + 1] = { record, window }
 						used[tostring(window.stable_id)], matched[i] = true, true
@@ -518,6 +577,7 @@ local function roots(home_variable, fallback, dirs_variable, dirs_default, suffi
 	return result
 end
 function M.desktops(autostart)
+	if not file_worker then return file_task("desktops", autostart) end
 	local dirs = autostart and roots("XDG_CONFIG_HOME", "/.config", "XDG_CONFIG_DIRS", "/etc/xdg", "/autostart")
 		or roots("XDG_DATA_HOME", "/.local/share", "XDG_DATA_DIRS", "/usr/local/share:/usr/share", "/applications")
 	local matches, seen = {}, {}
@@ -650,14 +710,68 @@ function M.configure(options)
 	if options.enabled ~= true then
 		return
 	end
-	M.status, M.restoring = "pending startup", true
-	-- Finish processing all user configuration before starting the controller.
-	hl.timer(function()
-		local ok, message = pcall(M.start, options)
-		if not ok then
-			M.status = "stopped: " .. tostring(message)
+	assert(type(hl.plugin.window_session.file_submit) == "function", "Restart Hyprland to load the file worker")
+	-- Publish from the startup config reload, before READY/exec-once, not a deferred timer.
+	assert(hl.plugin.window_session.protocol_start(state_dir(), options.ignore or {}))
+	M.status, M.restoring = "preparing session files", true
+	M.task = coroutine.create(function()
+		local c = M.start(options)
+		for _, name in ipairs({ "save", "cycle", "restore_cycle" }) do
+			local action = M[name]
+			M[name] = function()
+				assert(not M.task and not M.shutting_down, "Session operation is busy; retry when idle")
+				if name == "save" then assert(not c.cycling, "Wait for the cycle to finish")
+				elseif name == "cycle" then assert(c.finished and not c.stopping and not c.cycling, "Wait for recording before cycling")
+				else assert(c.stopping or (c.finished and not c.cycling), "A restore or close operation is still active") end
+				local previous, label = M.status, "preparing " .. name
+				M.status, M.operation = label, name
+				M.task = coroutine.create(function()
+					action()
+					if M.status == label then M.status = previous end
+				end)
+				return label
+			end
 		end
-	end, { timeout = 100, type = "oneshot" })
+	end)
+	local ticks = 0
+	local function advance()
+		if M.shutting_down then return end
+		ticks = ticks + 1
+		local c = M.controller
+		if not M.task then
+			if not c or c.stopping or ticks < 50 then return end
+			ticks = 0
+			M.task = coroutine.create(c.tick)
+		end
+		local result
+		if M.waiting then
+			local ready = table.pack(hl.plugin.window_session.file_poll(M.waiting))
+			assert(ready[1] ~= nil, ready[2])
+			if not ready[1] then return end
+			M.waiting = nil
+			result = table.pack(coroutine.resume(M.task, table.unpack(ready, 2, ready.n)))
+		else
+			result = table.pack(coroutine.resume(M.task))
+		end
+		assert(result[1], result[2])
+		if coroutine.status(M.task) == "dead" then M.task, M.operation = nil, nil
+		else M.waiting = assert(result[2], "Session coroutine yielded without a file task") end
+	end
+	-- This timer only consumes completed jobs. No clock-budget retries or blocking waits.
+	-- Register callbacks on Hyprland's main Lua state, never from a coroutine.
+	M.timer = hl.timer(function()
+		local ok, message = pcall(advance)
+		if not ok then
+			M.task, M.waiting = nil, nil
+			if M.controller then M.controller.fail(message)
+			else M.status = "stopped: " .. tostring(message) end
+			M.operation = nil
+		end
+	end, { timeout = 20, type = "repeat" })
+	hl.on("hyprland.shutdown", function()
+		M.shutting_down = true
+		if M.controller then M.controller.stopping = true end
+	end)
 end
 
 function M.start(options)
@@ -672,33 +786,30 @@ function M.start(options)
 	end
 	assert(hl.plugin and hl.plugin.window_session, "Native window-session plugin is not loaded")
 	assert(
-		type(hl.plugin.window_session.prepare_dir) == "function"
-			and type(hl.plugin.window_session.archive_snapshot) == "function"
-			and type(hl.plugin.window_session.remap) == "function"
-			and type(hl.plugin.window_session.desktop_files) == "function"
-			and type(hl.plugin.window_session.process_command) == "function"
+		type(hl.plugin.window_session.remap) == "function"
 			and type(hl.plugin.window_session.capture_state) == "function"
 			and type(hl.plugin.window_session.inspect_state) == "function"
 			and type(hl.plugin.window_session.apply_state) == "function"
-			and type(hl.plugin.window_session.raise_state) == "function",
+			and type(hl.plugin.window_session.raise_state) == "function"
+			and type(hl.plugin.window_session.identity) == "function",
 		"Restart Hyprland to load the updated window-session plugin"
 	)
 	local preserve = hl.get_config("dwindle.preserve_split")
 	assert(preserve == true or preserve == 1, "Enable dwindle.preserve_split for exact restoration")
-	local home, runtime = assert(os.getenv("HOME")), assert(os.getenv("XDG_RUNTIME_DIR"))
+	local runtime = assert(os.getenv("XDG_RUNTIME_DIR"))
 	local signature = assert(os.getenv("HYPRLAND_INSTANCE_SIGNATURE"))
-	local dir = (os.getenv("XDG_STATE_HOME") or home .. "/.local/state") .. "/hyprcachy/window-session"
+	local dir = state_dir()
 	-- A private directory protects all snapshot/temp files, irrespective of umask.
-	assert(hl.plugin.window_session.prepare_dir(dir))
 	local file, marker = dir .. "/current.tsv", runtime .. "/hyprcachy-window-session-" .. hex(signature) .. ".native"
 	local saved = read(file)
 	if saved and saved:match("^hyprcachy%-window%-session%-v%d+\n") and saved:sub(1, #header) ~= header then
-		M.last_archive = assert(hl.plugin.window_session.archive_snapshot(file))
+		M.last_archive = assert(file_task("archive", file))
 		saved = nil -- Preserve the old bytes, but never interpret a different format.
 	end
 	local cycle_file = dir .. "/cycle.tsv"
 	local trees
 	local c = { desktops = M.desktops(false) }
+	local autostarts = M.desktops(true)
 	-- Explicit replay may reopen login opt-outs; ignored windows remain excluded.
 	local cycle_launch = {}
 	for app, value in pairs(launch) do
@@ -769,6 +880,7 @@ function M.start(options)
 		c.topology, c.last, c.autostarts, c.closing = nil, nil, nil, nil
 	end
 	begin_restore(saved)
+	c.autostarts = autostarts
 	if read(marker) then
 		c.pending, trees, c.total, c.reloading = {}, {}, 0, true
 	else
@@ -884,7 +996,7 @@ function M.start(options)
 				end
 			end
 			if c.seconds >= timing.launch_delay and #c.pending > 0 then
-				c.autostarts = c.autostarts or M.desktops(true)
+				assert(c.autostarts, "Autostart discovery has not completed")
 				for _, record in ipairs(c.pending) do
 					local app = record.class
 					if not c.attempted[app] then
@@ -981,7 +1093,7 @@ function M.start(options)
 						if eligible(window, ignored) and window.workspace.config_name == name then windows[#windows + 1] = window end
 					end
 					table.sort(windows, function(a, b) return a.stable_id < b.stable_id end)
-					local matched = M.pair(records, windows, {}, true)
+					local matched = M.pair(records, windows, {}, true, true)
 					for _, pair in ipairs(matched) do bindings[pair[1].slot] = tostring(pair[2].stable_id) end
 				end
 			end
@@ -1021,22 +1133,38 @@ function M.start(options)
 			M.status = M.status .. "; skipped: " .. table.concat(M.capture_errors, "; ")
 		end
 	end
-	c.timer = hl.timer(function()
-		local ok, err = pcall(c.tick)
-		if not ok then
-			c.stopping = true
-			M.status = "stopped: " .. tostring(err)
-			print("Window session: " .. M.status)
-			if c.total > 0 and not c.reported then
-				report("Restore stopped by an error; not all state was restored. Check status and Hyprland logs.", true)
-			end
-		end
-	end, { timeout = 1000, type = "repeat" })
-	hl.on("hyprland.shutdown", function()
+	c.fail = function(err)
 		c.stopping = true
-	end)
+		M.status = "stopped: " .. tostring(err)
+		print("Window session: " .. M.status)
+		if M.operation then
+			report("Session " .. M.operation .. " failed. Check status before closing applications or logging out.", true)
+		elseif c.total > 0 and not c.reported then
+			report("Restore stopped by an error; not all state was restored. Check status and Hyprland logs.", true)
+		end
+	end
 	M.status = "started"
 	return c
+end
+
+-- Executed only in the worker's private Lua state, with no compositor APIs installed.
+function M.file_work(operation, ...)
+	assert(file_worker, "File operations belong to the worker")
+	if operation == "read" then return read(...)
+	elseif operation == "write" then return write(...)
+	elseif operation == "archive" then return assert(hl.plugin.window_session.archive_snapshot(...))
+	elseif operation == "desktops" then return M.desktops(...)
+	elseif operation == "encode" then return M.encode(...)
+	elseif operation == "decode" then return M.decode(...)
+	elseif operation == "commands" then
+		local results = {}
+		for i, request in ipairs((...)) do
+			local command, err = hl.plugin.window_session.process_command(request.pid)
+			results[i] = { command = command, error = err }
+		end
+		return results
+	end
+	error("Unknown file operation")
 end
 
 return M

@@ -1,17 +1,16 @@
 # Local package: source checksums are not a substitute for reviewing this checkout.
 pkgname=hyprcachy-window-session
-pkgver=0.10.0
-pkgrel=1
+pkgver=0.11.0
+pkgrel=5
 pkgdesc='Native dwindle session persistence with pre-transaction compilation checks'
 arch=('x86_64')
 license=() # The repository has not declared a license.
 depends=('hyprland' 'gcc-libs' 'gcc' 'make' 'pkgconf' 'uwsm' 'libnotify' 'coreutils>=9.5'
-         'pacman-contrib' 'hyprcachy-upgrade-guard>=0.2.0')
+         'pacman-contrib' 'wayland' 'hyprcachy-upgrade-guard>=0.2.0')
 options=('!lto' '!debug')
-install=window-session.install
-source=('plugin.cpp' 'tree.hpp' 'filesystem.hpp' 'window-state.hpp' 'Makefile'
-        'session.lua' 'hyprcachy-window-session.desktop' '99-window-session-refresh.hook'
-        'upgrade-adapter' 'legacy-post' '99-window-session-publish.hook' 'window-session.install' 'README.md' 'plugin-README.md')
+source=('plugin.cpp' 'tree.hpp' 'filesystem.hpp' 'file-worker.hpp' 'window-state.hpp' 'Makefile'
+        'session-store.hpp' 'session-protocol.hpp' 'xx-session-management-v1.xml'
+        'init.lua' 'session.lua' 'upgrade-adapter' 'README.md' 'plugin-README.md')
 sha256sums=()
 for file in "${source[@]}"; do sha256sums+=('SKIP'); done
 
@@ -21,18 +20,13 @@ build() {
 
 package() {
     install -Dm755 upgrade-adapter "$pkgdir/usr/lib/hyprcachy/upgrade.d/$pkgname/adapter"
-    # Finish a transaction authorized by the installed pre-adapter plugin guard.
-    install -Dm755 legacy-post "$pkgdir/usr/lib/hyprcachy/window-session/transaction-gate"
     install -Dm644 build/window-session.so "$pkgdir/usr/lib/hyprcachy/window-session/window-session.so"
     install -Dm644 README.md "$pkgdir/usr/share/doc/hyprcachy-window-session/README.md"
     install -Dm644 plugin-README.md "$pkgdir/usr/share/doc/hyprcachy-window-session/plugin-README.md"
+    install -Dm644 init.lua "$pkgdir/usr/share/hyprcachy/window-session/init.lua"
     install -Dm644 session.lua "$pkgdir/usr/share/hyprcachy/window-session/session.lua"
-    install -Dm644 hyprcachy-window-session.desktop "$pkgdir/etc/xdg/autostart/hyprcachy-window-session.desktop"
     # Only native build inputs are needed for incoming-package compilation.
-    for file in plugin.cpp tree.hpp filesystem.hpp window-state.hpp Makefile; do
+    for file in plugin.cpp tree.hpp filesystem.hpp file-worker.hpp window-state.hpp session-store.hpp session-protocol.hpp xx-session-management-v1.xml Makefile; do
         install -Dm644 "$file" "$pkgdir/usr/src/hyprcachy-window-session/$file"
-    done
-    for file in ./*.hook; do
-        install -Dm644 "$file" "$pkgdir/usr/share/libalpm/hooks/${file##*/}"
     done
 }

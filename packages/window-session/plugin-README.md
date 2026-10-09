@@ -46,26 +46,35 @@ hl.config({
     dwindle = { preserve_split = true },
 })
 
-if hl.plugin.window_session and hl.plugin.window_session.config then
-    hl.plugin.window_session.config({
-        enabled = true,
-        launch_delay = 20,    -- Seconds before missing-app launches / fallback matching.
-        restore_timeout = 80, -- Maximum startup matching window; must exceed launch_delay.
-        stability_delay = 15, -- Stable topology before automatic saving.
-        launch = {
-            foot = { "foot", "tmux", "new-session", "-A", "-s", "main" },
-            firefox = "firefox.desktop", -- Desktop entry ID instead of an argv table.
-            vesktop = false, -- Placement only; another autostart owns launching.
-        },
-        ignore = {}, -- Optional initial classes, e.g. { "private-app" }.
-    })
-end
+dofile("/usr/share/hyprcachy/window-session/init.lua")({
+    enabled = true,
+    launch_delay = 20,    -- Seconds before missing-app launches / fallback matching.
+    restore_timeout = 80, -- Maximum startup matching window; must exceed launch_delay.
+    stability_delay = 15, -- Stable topology before automatic saving.
+    launch = {
+        foot = { "foot", "tmux", "new-session", "-A", "-s", "main" },
+        firefox = "firefox.desktop", -- Desktop entry ID instead of an argv table.
+        vesktop = false, -- Placement only; another autostart owns launching.
+    },
+    ignore = {}, -- Optional initial classes, e.g. { "private-app" }.
+})
 ```
 
-Keep the guard shown above: the plugin may not have loaded yet or may be absent.
-No `dofile` call is needed. Call `config` once per reload, supplying the complete options table.
-Without a call (or without `enabled = true`), restoration is disabled even though
-the native plugin is loaded. `hyprctl plugin list` shows whether it is loaded.
+The package-owned `init.lua` returns a configuration function. Call it once per
+reload with the complete options table; no loading logic or first-pass guard is
+needed in dotfiles. Its stable absolute path does not depend on Lua versioned
+module search directories. Install the package before using this call: a missing
+snippet is a configuration error, not a silent disable.
+
+The function declares `hl.plugin.load` and waits for the native API before applying
+settings. Hyprland reloads the config after loading its declared plugins, before
+announcing session readiness. Native initialization prepares the bounded protocol
+store; the enabled config call then advertises it synchronously, before deferred
+desktop discovery. Without `enabled = true`, restoration remains disabled.
+`hyprctl plugin list` shows whether the native plugin is loaded. Keep the snippet
+call while the session is running: removing it on reload lets Hyprland unload the
+config-owned plugin, which can disconnect protocol clients. Disable the controller
+with `enabled = false`, not by removing the call.
 Keep `dwindle.preserve_split = true`. Once the native plugin is loaded, configuration
 reloads apply settings without repeating restoration in the same session. With defaults, the first automatic save
 needs about **20 seconds** of stable topology. Saving is sampled every five seconds,
@@ -73,8 +82,24 @@ so custom stability delays are rounded up to a sampling tick after a change is o
 
 ```sh
 hyprctl repl 'return hyprcachy_window_session.status'
-hyprctl eval 'hyprcachy_window_session.save()' # explicit checkpoint, even empty
+hyprctl repl 'return hyprcachy_window_session.save()' # queues an explicit checkpoint, even empty
 ```
+
+Startup discovery, snapshot reads/writes, archival, process-command reads, and
+snapshot encoding/decoding run on a native worker with its own Lua state. Only
+copied plain data crosses threads; live windows and compositor APIs stay on the
+main thread. The controller awaits completed jobs rather than blocking a callback,
+increasing Hyprland's watchdog limit, or retrying a function against elapsed time.
+Slow storage delays readiness/checkpoint completion, not the compositor callback.
+Application and autostart discovery finish before restore matching begins.
+
+`save()`, `cycle()` and `restore_cycle()` queue asynchronous work. Wait until
+`hyprcachy_window_session.task == nil` and check `.status` for errors before logout;
+`save()` returning does not mean the checkpoint is committed. Cycle closes windows
+only after both recovery checkpoints have been written successfully. Concurrent
+manual operations are rejected as busy. Errors stop the controller visibly;
+failed writes do not replace the last complete checkpoint. Reload cancels obsolete
+queued tasks; plugin shutdown joins the worker before unloading its code.
 
 Launch keys are exact initial window classes (`hyprctl clients`); values are
 argument arrays, desktop-entry IDs, or `false`. Launch priority is an explicit
@@ -100,8 +125,11 @@ Version-specific executable/JAR paths can become stale after updates, and sandbo
 apps or apps requiring launcher-provided environment may need an explicit override.
 This fallback recreates a process, not the launcher's environment or login state.
 
-Matching uses initial class/title fingerprints, with occurrence-order fallback
-at `launch_delay`. When restoring a nonempty snapshot, startup matching stays active
+Participating native Wayland windows match by protocol session/window identities,
+including the old identity retained while Chromium renumbers a restored window.
+These records never fall back to titles or enumeration order. Other windows use
+initial class/title fingerprints, with occurrence-order fallback at `launch_delay`.
+When restoring a nonempty snapshot, startup matching stays active
 for the full `restore_timeout` (default 80 seconds), even when all windows initially
 match. If a matched loading window disappears, its saved record is requeued and its
 replacement receives the same placement without launching another copy of the app.
@@ -152,9 +180,12 @@ trees, expected remaining trees and away-window membership.
 State is TSV in `$XDG_STATE_HOME/hyprcachy/window-session/` (default
 `~/.local/state/hyprcachy/window-session/`), inside a mode-0700 directory. Writes
 replace `current.tsv` atomically; `previous.tsv` retains the prior login snapshot.
-Only the current format (`hyprcachy-window-session-v7`) is accepted. The identifier
+Only the current format (`hyprcachy-window-session-v8`) is accepted. The identifier
 rejects incompatible data; there are no legacy readers or migrations. Native-state
-records have no separate version and are required for every saved window. A failed
+records have no separate version and are required for every saved window.
+Optional `I` records bind a snapshot slot to a protocol session capability and
+compositor-generated window generation. Duplicate or malformed identities reject
+the snapshot; these tokens must be kept private. A failed
 native-state capture prevents saving rather than overwriting a complete checkpoint
 with partial state. Missing launch commands or trees still have their own error reporting.
 
@@ -175,12 +206,12 @@ the remapped expectation. Otherwise it is reported as skipped; returning windows
 still use normal placement. Config reloads can recover the last checkpoint's
 baselines by matching within workspaces and checking the live tree, without
 replaying moves/fullscreen. This inherits ordinary window-matching limitations.
-As with all session state, only completed checkpoints survive; use `save()` before
-an immediate logout if the latest change has not reached the periodic sample.
+As with all session state, only completed checkpoints survive; queue `save()` and
+wait for completion before logout if the latest change has not reached the periodic sample.
 
 Install/rebuild and restart Hyprland to load the native `remap` helper. Incompatible
 snapshots are archived as below; old in-memory baselines cannot be recovered after
-the first activation. Subsequent fullscreen round trips are persisted in v7.
+the first activation. Subsequent fullscreen round trips are persisted in v8.
 
 At controller startup, a `current.tsv` with a recognized snapshot header but a
 different format is renamed to a unique `current.tsv.incompatible-XXXXXX` in the
@@ -226,6 +257,64 @@ variables are never captured. Keep snapshots private and never import untrusted
 ones.** Hex encoding and title fingerprints are not encryption. `.status`, `.capture_errors` and
 Hyprland's logs expose failures/skipped captures.
 
+## Persistent Wayland window identities
+
+When enabled, the native plugin advertises **`xx_session_manager_v1` version 1**.
+This is the experimental `xx-session-management-v1` revision used by Chromium.
+It is application-independent, but requires a client that implements that exact
+revision; it does not turn unsupported applications or XWayland windows into
+protocol participants.
+
+For Chromium, enable `chrome://flags/#wayland-session-management` (the underlying
+feature is `WaylandSessionManagement`) and use native Wayland. Chromium must also
+restore its own browser session/windows, for example with “Continue where you left
+off”. The configuration-time load and enabled configuration shown above make the
+protocol available before normal session autostarts on a fresh startup. Do not
+replace that declaration with an XDG-autostart or exec-once plugin loader: late
+loading cannot retroactively register an already-open browser's windows. A browser
+opened before a manual late enable/load may need restarting. No browser settings
+or flags are changed by this package, and it still launches once per app, not per window.
+
+The protocol remembers initial configure sizes and persistent identities in the
+private, atomically replaced mode-0600 `protocol.tsv`. Creation/removal is saved
+before acknowledging the request; size changes are batched over 250 ms and flushed
+at orderly plugin shutdown. A crash can lose the latest pending size update.
+Recognized restores apply the saved size and send the protocol's `restored` event
+after the initial empty surface commit, before the initial toplevel configure.
+The existing Lua controller then uses those identities for desktop placement,
+dwindle trees and fullscreen restoration during its normal startup/cycle window;
+this is not a separate perpetual workspace-restoration daemon.
+
+Session capabilities and window generations are random 256-bit values. Window
+generations prevent a client reusing a deleted name from inheriting an unrelated
+old snapshot slot. Chromium removes the old name and adds a new name before mapping;
+the bridge retains the old restore identity on that physical toplevel for matching,
+while subsequent captures save its new identity. Same-client duplicate sessions,
+duplicate live names and late restore requests are rejected. Another connection
+with the session capability can take over; the prior session becomes inert.
+`ignore` classes also suppress protocol size restoration/tracking once their Wayland
+app ID is known; an application may register its capability before setting that ID.
+
+Explicit session/toplevel removal forgets the associated protocol state. Destroying
+a session object freezes it, while disconnecting preserves its last checkpoint.
+An explicit `xdg_toplevel.destroy` while its session is active removes that window.
+Consequently a graceful close-and-restore cycle may lose protocol identities: this
+is required protocol removal semantics, not permission to guess by title. Missing
+identities are reported as unmatched. Browser tabs, documents, authentication and
+application session bookkeeping remain application-owned.
+
+Limits are 128 stored sessions, 256 stored/live managed windows, 1024 live protocol
+objects, 512-byte client names and a 512-KiB protocol checkpoint. Corrupt, oversized
+or unsafe checkpoint files fail closed, without replacing them. Keep backups before
+resetting `protocol.tsv`, and only reset it with Hyprland stopped; forgetting the
+capabilities also breaks identity matching with older desktop snapshots.
+
+The service survives configuration reloads once enabled, preserving existing client
+objects. To disable it entirely, set `enabled = false` and start a new graphical
+session. Do not hot-unload it with connected clients. On the first v8 activation,
+the old v7 desktop snapshot is archived rather than guessed/migrated; let participating
+apps register and save a fresh checkpoint before expecting identity-based restoration.
+
 ## Explicit close-and-restore cycle
 
 Wait until the controller is recording, then run:
@@ -268,9 +357,8 @@ only another explicit cycle overwrites it. Keep it private like other snapshots.
 ## Upgrades and removal
 
 See [the package guide](README.md) for guarded updates,
-startup integration, removal and the old guard's migration handoff. Replacing
-native code requires restarting Hyprland; a configuration reload cannot replace
-the loaded binary. Removing the package does not delete private snapshots.
+startup integration and removal. Rebuild/reinstall the packages and reboot after
+replacing native code; a configuration reload cannot replace the loaded binary. Removing the package does not delete private snapshots.
 
 ## Known limits
 
@@ -279,8 +367,10 @@ the loaded binary. Removing the package does not delete private snapshots.
   group-target/member bindings rather than one window per dwindle leaf; special
   workspaces require separate identity/visibility handling. These are explicit
   exclusions, not limitations imposed by Hyprland itself.
-- Multiple indistinguishable windows remain ambiguous across boots. This restores
-  layout structure for the matched windows, not application contents or identity.
+- Multiple indistinguishable windows in non-participating apps remain ambiguous
+  across boots. Protocol identities avoid that ambiguity only when the application
+  retains its session and explicitly restores the corresponding windows. Layout
+  restoration is not restoration of application contents.
 - Trees are bounded to 511 nodes, 128 levels, 32 KiB and split ratios `[0.1, 1.9]`.
 - Monitor changes scale/clamp floating geometry. Workspace moves affect every
   window on that workspace. Fullscreen return geometry uses the observation/fallback

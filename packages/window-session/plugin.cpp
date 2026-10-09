@@ -16,6 +16,8 @@ extern "C" {
 #include "tree.hpp"
 #include "filesystem.hpp"
 #include "window-state.hpp"
+#include "file-worker.hpp"
+#include "session-protocol.hpp"
 
 namespace {
 using Node = Layout::Tiled::SDwindleNodeData;
@@ -189,6 +191,11 @@ int restore(lua_State* L) {
 // Called through Hyprland's plugin-owned API after the native plugin is loaded.
 int configure(lua_State* L) {
     luaL_checktype(L, 1, LUA_TTABLE);
+    lua_getglobal(L, "hyprcachy_window_session");
+    const bool configured = !lua_isnil(L, -1);
+    lua_pop(L, 1);
+    if (configured) return luaL_error(L, "Call window_session.config once per configuration reload");
+    if (SessionIO::worker) SessionIO::worker->reset();
     if (luaL_loadfile(L, "/usr/share/hyprcachy/window-session/session.lua") != LUA_OK
         || lua_pcall(L, 0, 1, 0) != LUA_OK)
         return lua_error(L);
@@ -205,21 +212,24 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     if (HyprlandAPI::getHyprlandVersion(handle).hash != GIT_COMMIT_HASH
         || std::string(__hyprland_api_get_hash()) != __hyprland_api_get_client_hash())
         throw std::runtime_error("hyprcachy-window-session: rebuild for this Hyprland/library ABI");
+    SessionProtocol::prepare();
     if (!HyprlandAPI::addLuaFunction(handle, "window_session", "config", configure)
         || !HyprlandAPI::addLuaFunction(handle, "window_session", "capture", capture)
         || !HyprlandAPI::addLuaFunction(handle, "window_session", "restore", restore)
         || !HyprlandAPI::addLuaFunction(handle, "window_session", "validate", validate)
         || !HyprlandAPI::addLuaFunction(handle, "window_session", "remap", remap)
+        || !HyprlandAPI::addLuaFunction(handle, "window_session", "file_submit", SessionIO::submit)
+        || !HyprlandAPI::addLuaFunction(handle, "window_session", "file_poll", SessionIO::poll)
+        || !HyprlandAPI::addLuaFunction(handle, "window_session", "protocol_start", SessionProtocol::start)
+        || !HyprlandAPI::addLuaFunction(handle, "window_session", "identity", SessionProtocol::identity)
         || !HyprlandAPI::addLuaFunction(handle, "window_session", "capture_state", SessionState::capture)
         || !HyprlandAPI::addLuaFunction(handle, "window_session", "inspect_state", SessionState::inspect)
         || !HyprlandAPI::addLuaFunction(handle, "window_session", "apply_state", SessionState::apply)
-        || !HyprlandAPI::addLuaFunction(handle, "window_session", "raise_state", SessionState::raise)
-        || !HyprlandAPI::addLuaFunction(handle, "window_session", "process_command", SessionFiles::process_command)
-        || !HyprlandAPI::addLuaFunction(handle, "window_session", "prepare_dir", SessionFiles::prepare_dir)
-        || !HyprlandAPI::addLuaFunction(handle, "window_session", "archive_snapshot", SessionFiles::archive_snapshot)
-        || !HyprlandAPI::addLuaFunction(handle, "window_session", "desktop_files", SessionFiles::desktop_files))
+        || !HyprlandAPI::addLuaFunction(handle, "window_session", "raise_state", SessionState::raise))
         throw std::runtime_error("hyprcachy-window-session: could not register Lua API");
+    SessionIO::worker = std::make_unique<SessionIO::Worker>(SessionState::inspect, validate,
+        "/usr/share/hyprcachy/window-session/session.lua");
     SessionState::start();
     return {"hyprcachy-window-session", "Save and restore authoritative dwindle split trees", "Hyprcachy", "development"};
 }
-APICALL EXPORT void PLUGIN_EXIT() { SessionState::stop(); }
+APICALL EXPORT void PLUGIN_EXIT() { SessionIO::stop(); SessionProtocol::stop(); SessionState::stop(); }

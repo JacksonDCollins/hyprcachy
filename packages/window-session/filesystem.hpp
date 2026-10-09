@@ -31,16 +31,23 @@ inline int failure(lua_State* L, const std::exception& error) {
     lua_pushstring(L, error.what());
     return 2;
 }
-inline int prepare_dir(lua_State* L) {
-    try {
-        const auto dir = path(L);
-        fs::create_directories(dir);
-        if (!fs::is_directory(fs::symlink_status(dir)))
-            throw std::runtime_error("State directory must be a real directory, not a symlink");
-        fs::permissions(dir, fs::perms::owner_all, fs::perm_options::replace);
-        lua_pushboolean(L, true);
-        return 1;
-    } catch (const std::exception& error) { return failure(L, error); }
+inline fs::path state_directory() {
+    std::string base;
+    if (const auto value = getenv("XDG_STATE_HOME")) base = value;
+    else {
+        const auto home = getenv("HOME");
+        if (!home) throw std::runtime_error("HOME is required for session state");
+        base = std::string(home) + "/.local/state";
+    }
+    const fs::path dir(base + "/hyprcachy/window-session");
+    if (!dir.is_absolute()) throw std::runtime_error("Session state directory must be absolute");
+    return dir;
+}
+inline void prepare_directory(const fs::path& dir) {
+    fs::create_directories(dir);
+    if (!fs::is_directory(fs::symlink_status(dir)))
+        throw std::runtime_error("State directory must be a real directory, not a symlink");
+    fs::permissions(dir, fs::perms::owner_all, fs::perm_options::replace);
 }
 inline int archive_snapshot(lua_State* L) {
     try {

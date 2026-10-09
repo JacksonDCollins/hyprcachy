@@ -8,7 +8,6 @@ set -euo pipefail
 repo=$(dirname -- "$(realpath -- "${BASH_SOURCE[0]}")")
 sources=("$repo/packages/$1")
 if [[ $1 == all ]]; then
-    # Explicit coordinated update also retires any old bundled plugin guard.
     sources=("$repo/packages/upgrade-guard" "$repo/packages/window-session" "$repo/packages/tmux")
 fi
 packages=()

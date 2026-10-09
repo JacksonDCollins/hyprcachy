@@ -87,7 +87,6 @@ install_native_packages() (
     set -euo pipefail
     local component source_dir metadata requirements missing built
     local build sources with_guard=false
-    local hook hook_dirs directory default_hooks=false network_hook='' network_copy='' network_checksum=''
     local -a required packages=()
     for component in "$@"; do
         [[ $component != upgrade-guard ]] || with_guard=true
@@ -96,13 +95,7 @@ install_native_packages() (
         die "Native package builds require installed base-devel tools: $missing"
     fi
     build=$(mktemp -d /tmp/hyprcachy-native.XXXXXX)
-    trap '
-        if [[ -n "$network_copy" ]]; then
-            if [[ "$network_hook" -ef "$network_copy" && $(sha256sum -- "$network_copy") == "$network_checksum" ]]; then rm -f -- "$network_hook"; fi
-            rm -f -- "$network_copy"
-        fi
-        rm -rf -- "$build"
-    ' EXIT
+    trap 'rm -rf -- "$build"' EXIT
     trap 'exit 130' INT
     trap 'exit 143' TERM HUP
     chown "$uid:$(id -g "$user")" "$build"
@@ -140,32 +133,6 @@ install_native_packages() (
         [[ $built != *$'\n'* && -f $built ]] || die 'Expected exactly one built native package.'
         packages+=("$built")
     done
-    # Pacman reads PRE hooks before installing the corrected package. Give only
-    # the old preflight hook its declared source-fetch access during bootstrap.
-    hook=/usr/share/libalpm/hooks/01-hyprcachy-upgrade-check.hook
-    if $with_guard && [[ -f "$hook" ]] && ! grep -Eq '^NetworkAccess[[:space:]]*=[[:space:]]*allowed[[:space:]]*$' "$hook"; then
-        [[ ! -L "$hook" && $(pacman -Qqo -- "$hook") == hyprcachy-upgrade-guard ]] ||
-            die 'Cannot identify the installed guard hook for network-access migration.'
-        hook_dirs=$(pacman-conf HookDir)
-        while IFS= read -r directory; do
-            directory=${directory%/}
-            [[ $directory != /etc/pacman.d/hooks ]] || default_hooks=true
-            [[ ! -e "$directory/${hook##*/}" && ! -L "$directory/${hook##*/}" ]] ||
-                die 'An administrative guard-hook override already exists; review its NetworkAccess setting before setup.'
-        done <<< "$hook_dirs"
-        $default_hooks || die 'The default administrative hook directory is unavailable.'
-        grep -qx '\[Action\]' "$hook" || die 'Invalid installed guard hook.'
-        mkdir -p /etc/pacman.d/hooks
-        network_hook="/etc/pacman.d/hooks/${hook##*/}"
-        network_copy=$(mktemp /etc/pacman.d/hooks/.hyprcachy-network.XXXXXX)
-        awk '/^\[Action\]$/ { print; print "NetworkAccess = allowed"; next }
-             !/^NetworkAccess[[:space:]]*=/ { print }' "$hook" > "$network_copy"
-        chmod 0644 "$network_copy"
-        network_checksum=$(sha256sum -- "$network_copy")
-        # Hard-link without overwriting a concurrently created administrator file.
-        ln -- "$network_copy" "$network_hook"
-        echo 'Temporarily allowing source downloads for the old guard preflight hook.'
-    fi
     # All archives are ready; hooks/checks stay enabled and builds remain offline.
     pacman -U --noconfirm -- "${packages[@]}"
 )
@@ -173,19 +140,9 @@ install_native_packages() (
 # Repair an installed guard before it can block the first distribution upgrade.
 # A fresh target has no guard and gets its build prerequisites from that upgrade.
 native_components=(upgrade-guard window-session tmux)
-bootstrap_components=()
 if [[ $(pacman -Qq -- hyprcachy-upgrade-guard 2>/dev/null || true) == hyprcachy-upgrade-guard ]]; then
-    bootstrap_components=(upgrade-guard)
-fi
-if installed=$(pacman -Q -- hyprcachy-window-session 2>/dev/null) &&
-    [[ $installed == hyprcachy-window-session\ * ]] &&
-    (( $(vercmp "${installed#* }" 0.10.0) < 0 )); then
-    # Retire the old component-owned hooks together with the new guard install.
-    bootstrap_components=(upgrade-guard window-session)
-fi
-if (( ${#bootstrap_components[@]} )); then
     echo 'Updating the installed native upgrade guard before the system upgrade...'
-    install_native_packages "${bootstrap_components[@]}"
+    install_native_packages upgrade-guard
     native_components=(window-session tmux)
 fi
 
