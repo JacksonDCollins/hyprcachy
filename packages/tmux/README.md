@@ -75,8 +75,9 @@ native dependency, that component, or the guard changes. It remains compile-only
 staging cleanup are shared; there is no daemon, timer or second host transaction
 for tmux updates. Existing tmux servers are never restarted by these hooks.
 
-The patch was developed and checked against tmux 3.7c. These bounded checks
-are not an exhaustive tmux regression suite.
+The patch targets tmux 3.8's redraw and prompt APIs; the old 3.7c patch is not
+retained. The build checks split-status rendering and pane origin using private
+servers; these bounded checks are not an exhaustive tmux regression suite.
 
 Routine compatible updates are automatic, **not automatic patch repair**. A
 changed source origin, unrecognized downstream recipe, unsigned local tmux

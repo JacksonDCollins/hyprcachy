@@ -1,7 +1,7 @@
 # Companion executable; the distribution continues to own /usr/bin/tmux.
 pkgname=hyprcachy-tmux
 pkgver=0.3.0
-pkgrel=2
+pkgrel=3
 pkgdesc='Split top/bottom tmux status with guarded automatic rebuilds'
 arch=('x86_64')
 license=('BSD')
