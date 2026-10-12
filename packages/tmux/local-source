@@ -1,0 +1,42 @@
+#!/usr/bin/bash -p
+# Read checkout data as its owner; only the offline candidate executes this code.
+set -euo pipefail
+export PATH=/usr/bin LC_ALL=C
+(( $# == 2 )) || { echo 'Usage: local-source SOURCE_DIRECTORY_FILE OUTPUT' >&2; exit 1; }
+mapfile -t paths < "$1"
+(( ${#paths[@]} == 1 ))
+source=${paths[0]}
+[[ $source == /* && $source != *$'\n'* && $source != *\\* ]]
+source=$(realpath -e -- "$source")
+[[ -d $source ]]
+uid=$(stat -c %u -- "$source")
+gid=$(id -g "$uid")
+(( uid != 0 )) || { echo 'The Hyprcachy checkout must belong to a normal user.' >&2; exit 1; }
+reader=()
+if (( EUID == 0 )); then
+    reader=(setpriv --reuid "$uid" --regid "$gid" --clear-groups --no-new-privs --reset-env)
+else
+    (( EUID == uid )) || exit 1
+fi
+files=(build split-status.patch)
+declare -A hashes
+for file in "${files[@]}"; do
+    [[ -f $source/$file && ! -L $source/$file ]]
+    (( $(stat -c %s -- "$source/$file") <= 4194304 ))
+    digest=$("${reader[@]}" /usr/bin/sha256sum -- "$source/$file")
+    hashes[$file]=${digest%% *}
+done
+mkdir -m 0700 -- "$2"
+for file in "${files[@]}"; do
+    "${reader[@]}" /usr/bin/dd if="$source/$file" iflag=nofollow,nonblock,count_bytes count=4194305 status=none > "$2/$file"
+    (( $(stat -c %s -- "$2/$file") <= 4194304 ))
+    digest=$(sha256sum -- "$2/$file")
+    [[ ${digest%% *} == "${hashes[$file]}" ]] || { echo 'Local tmux sources changed while staging; retry.' >&2; exit 1; }
+done
+for file in "${files[@]}"; do
+    digest=$("${reader[@]}" /usr/bin/sha256sum -- "$source/$file")
+    [[ ${digest%% *} == "${hashes[$file]}" ]] || { echo 'Local tmux sources changed while staging; retry.' >&2; exit 1; }
+    printf '%s  %s\n' "${hashes[$file]}" "$file"
+done > "$2/sources.sha256"
+printf 'Using local tmux sources: %s\n' "$source"
+cat -- "$2/sources.sha256"

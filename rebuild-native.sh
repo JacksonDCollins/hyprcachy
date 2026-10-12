@@ -2,9 +2,12 @@
 # Build only the requested component, or explicitly update all native packages.
 set -euo pipefail
 (( EUID != 0 )) || { echo 'Run this as your normal user; only pacman needs sudo.' >&2; exit 1; }
-[[ $# == 1 && ( $1 == window-session || $1 == tmux || $1 == all ) ]] || {
-    echo 'Usage: rebuild-native.sh window-session|tmux|all' >&2; exit 1;
+[[ ( $# == 1 || ( $# == 3 && $2 == --package-list && -n $3 ) ) &&
+   ( $1 == window-session || $1 == tmux || $1 == upgrade-guard || $1 == all ) ]] || {
+    echo 'Usage: rebuild-native.sh window-session|tmux|upgrade-guard|all [--package-list FILE]' >&2; exit 1;
 }
+# The full-update driver collects packages before starting its single install transaction.
+package_list=${3:-}
 repo=$(dirname -- "$(realpath -- "${BASH_SOURCE[0]}")")
 sources=("$repo/packages/$1")
 if [[ $1 == all ]]; then
@@ -33,4 +36,8 @@ for source_dir in "${sources[@]}"; do
     [[ $built != *$'\n'* && -f $built ]] || { echo 'Expected exactly one built native package.' >&2; exit 1; }
     packages+=("$built")
 done
-exec sudo pacman -U -- "${packages[@]}"
+if [[ -n $package_list ]]; then
+    printf '%s\0' "${packages[@]}" > "$package_list"
+else
+    exec sudo pacman -U -- "${packages[@]}"
+fi

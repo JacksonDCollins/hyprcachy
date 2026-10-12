@@ -22,10 +22,18 @@ Tmux depends on [hyprcachy-upgrade-guard](../upgrade-guard/), not on the
 window-session plugin or Hyprland. This command builds and installs only the
 companion; it does not rebuild the guard or update another component. Missing
 prerequisites (including the guard's required version) stop the command.
-Use `./update-native.sh` to explicitly install/update all three local packages,
-then reboot. This coordinated command also installs window-session if absent;
+Use `./update-native.sh` to prepare a full system upgrade together with all three
+local packages, then reboot. It builds against the incoming tmux archive before
+installing the complete frozen upgrade in one guarded transaction; it does not
+try the 3.8 patch against an installed 3.7 tmux first. This coordinated command also installs window-session if absent;
 it is not a tmux-only install.
 Install missing distribution prerequisites through your normal full system update.
+
+`setup.sh` also uses the coordinated path when a native component is installed,
+before its ordinary installing system upgrade. Fresh setups install prerequisites
+first. Both paths build from the user-owned `~/hyprcachy` tree; the recorded source
+directory is never a temporary setup directory. Setup does not fetch Hyprcachy or
+ask the unprivileged builder to run sudo.
 
 These commands require your approval/password for package installation. They do
 not restart tmux. The new feature requires a **new tmux server**; merely attaching
@@ -56,7 +64,11 @@ is installed:
 
 1. Preserve the exact selected package archives, signatures, databases and pacman
    command as before. Unrelated upgrades do not trigger a tmux build.
-2. Verify the stock tmux package's signature. Retrieve its packaging recipe and
+2. Freeze `build` and `split-status.patch` from the local checkout recorded when
+   this companion was built (normally `~/hyprcachy/packages/tmux`). Local edits are
+   included. Read them as the checkout owner, not root; reject missing, oversized,
+   symlinked or changing files. The sandbox gets copies, never a home-directory bind.
+   Nothing fetches or pulls Hyprcachy from GitHub. Verify the stock tmux package's signature. Retrieve its packaging recipe and
    require its SHA-256 to equal the signed package's `.BUILDINFO` digest. CachyOS's
    package-release adjustment is accepted only when the resulting digest matches.
 3. Fetch the matching upstream Git tag and packaging files. In the disposable
@@ -84,11 +96,22 @@ changed source origin, unrecognized downstream recipe, unsigned local tmux
 archive, patch conflict or failed build/check stops the upgrade for review. An
 offline update also needs the required sources to be available; this prototype
 fetches them for each guarded build rather than maintaining another source cache.
+These are upstream tmux sources, not Hyprcachy patch updates. Keep the recorded
+checkout available; rebuilding the companion from a moved checkout updates its
+recorded path. Missing local sources never fall back to the installed old patch.
 Recipe downloads get two bounded retries, including DNS failures. If no recipe
 was downloaded, the error reports a download failure rather than a hash mismatch;
 fix connectivity and retry the original command without disabling hooks.
-Initial/local companion builds need the exact signed installed tmux archive in
-pacman's cache, or the same version still available from the configured mirror.
+Component-only rebuilds need the exact signed installed tmux archive in pacman's
+cache, or the same version still available from the configured mirror. They do not
+upgrade distribution packages; use `./update-native.sh` when the current patch needs
+an incoming tmux version. Its driver supplies the exact target through
+`HYPRCACHY_TMUX_PACKAGE`, preserving the same signature and recipe verification.
+Repository replacement transitions cannot be translated faithfully to a local `-U`
+transaction, so the coordinated script rejects them; ordinary `pacman -Syu` retains
+its normal replacement handling. Install this updated companion/adapter once to
+enable local-source hooks; changing files in an older checkout alone cannot update
+an already installed old adapter.
 
 If publication fails after pacman has committed, the running server is untouched.
 The launcher refuses an executable whose recorded stock version is no longer

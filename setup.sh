@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # Repeatable setup for an existing Arch/CachyOS installation. Never formats disks.
 set -euo pipefail
-repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 
 # Removing a package here does not uninstall it from an existing system.
 PACKAGES=(
@@ -81,69 +80,83 @@ if [[ -e /etc/systemd/system/display-manager.service ]] &&
     die "Another login manager is enabled. Disable it before switching to greetd."
 fi
 
-# Shared by the early guard bootstrap and the normal post-upgrade installation.
-# Keep this in setup.sh: the two-script ISO path has no other local helpers.
+# Hooks need a persistent checkout, not a temporary copy deleted after setup.
+source_checkout="$user_home/hyprcachy"
+[[ -d "$source_checkout/packages/tmux" && -d "$source_checkout/packages/window-session" &&
+   -d "$source_checkout/packages/upgrade-guard" && -r "$source_checkout/rebuild-native.sh" &&
+   -r "$source_checkout/update-native.sh" && $(stat -c %u -- "$source_checkout") == "$uid" ]] ||
+    die "Provide a complete, user-owned local checkout at $source_checkout before running setup. Setup never clones or pulls Hyprcachy."
+
+# Root handles package installation; the shared drivers prepare/build only as the user.
 install_native_packages() (
     set -euo pipefail
-    local component source_dir metadata requirements missing built
-    local build sources with_guard=false
-    local -a required packages=()
-    for component in "$@"; do
-        [[ $component != upgrade-guard ]] || with_guard=true
-    done
-    if ! missing=$(pacman -T base-devel); then
-        die "Native package builds require installed base-devel tools: $missing"
-    fi
+    local build file identity name installed_names='' manifest=''
+    local -A prepared=()
+    local -a packages=() dependencies=() builder=(runuser -u "$user" -- env -u BASH_ENV -u ENV
+        -u HYPRCACHY_TMUX_PACKAGE -u HYPRCACHY_UPDATE_PLAN
+        HOME="$user_home" USER="$user" LOGNAME="$user" /usr/bin/bash)
     build=$(mktemp -d /tmp/hyprcachy-native.XXXXXX)
-    trap 'rm -rf -- "$build"' EXIT
+    trap 'runuser -u "$user" -- /usr/bin/rm -rf -- "$build"; [[ -z $manifest ]] || rm -f -- "$manifest"' EXIT
     trap 'exit 130' INT
     trap 'exit 143' TERM HUP
     chown "$uid:$(id -g "$user")" "$build"
-    if [[ -d "$repo_dir/packages" ]]; then
-        sources="$build/packages"
-        mkdir "$sources"
-        for component in "$@"; do
-            cp -R -- "$repo_dir/packages/$component" "$sources/$component"
-        done
-        chown -R "$uid:$(id -g "$user")" "$build"
+    if [[ $1 == coordinated ]]; then
+        pacman -Syu --downloadonly --noconfirm
+        "${builder[@]}" "$source_checkout/update-native.sh" --prepare "$build"
     else
-        # Fetch only this project's published sources, never run dotfiles as root.
-        runuser -u "$user" -- env -u BASH_ENV -u ENV HOME="$user_home" \
-            git clone --depth 1 --branch main https://github.com/JacksonDCollins/hyprcachy.git "$build/repo"
-        sources="$build/repo/packages"
+        "${builder[@]}" "$source_checkout/rebuild-native.sh" "$1" --package-list "$build/packages.list"
     fi
-    for component in "$@"; do
-        source_dir="$sources/$component"
-        metadata=$(runuser -u "$user" -- env -u BASH_ENV -u ENV HOME="$user_home" USER="$user" LOGNAME="$user" \
-            /usr/bin/bash -c 'cd -- "$1" && exec makepkg --printsrcinfo' -- "$source_dir")
-        requirements=$(awk -v with_guard="$with_guard" '
-            $1 ~ /^(make|check)?depends(_.*)?$/ {
-                if (with_guard == "true" && $3 ~ /^hyprcachy-upgrade-guard([<>=]|$)/) next
-                print $3
-            }' <<< "$metadata")
-        [[ -n $requirements ]] || die 'Cannot determine native package prerequisites.'
-        mapfile -t required <<< "$requirements"
-        if ! missing=$(pacman -T "${required[@]}"); then
-            die "Missing prerequisites for $component: $missing. Cannot build safely before installation."
+    # Do not read a user-controlled symlink/device as root, or accept a truncated list.
+    manifest=$(mktemp /tmp/hyprcachy-packages.XXXXXX)
+    [[ -f "$build/packages.list" && ! -L "$build/packages.list" ]]
+    runuser -u "$user" -- /usr/bin/dd if="$build/packages.list" iflag=nofollow,nonblock,count_bytes count=1048577 status=none > "$manifest"
+    (( $(stat -c %s -- "$manifest") <= 1048576 ))
+    [[ $(tail -c1 "$manifest" | base64) == AA== ]] || die 'Incomplete native package list.'
+    mapfile -d '' -t packages < "$manifest"
+    (( ${#packages[@]} > 0 )) || die 'No native packages were prepared.'
+    if [[ $1 == coordinated ]]; then
+        installed_names=$(pacman -Qq)
+        [[ -n $installed_names ]] || die 'Installed package list is empty; cannot preserve install reasons.'
+    fi
+    for file in "${packages[@]}"; do
+        identity=$(runuser -u "$user" -- /usr/bin/pacman -Qp -- "$file")
+        name=${identity%% *}
+        prepared["$name"]=true
+        # Derive reasons here, rather than trust another user-written manifest.
+        if [[ $1 == coordinated && $name != hyprcachy-upgrade-guard &&
+              $name != hyprcachy-window-session && $name != hyprcachy-tmux ]] &&
+            ! grep -qxF -- "$name" <<< "$installed_names"; then
+            dependencies+=("$name")
         fi
-        runuser -u "$user" -- env -u BASH_ENV -u ENV HOME="$user_home" USER="$user" LOGNAME="$user" \
-            /usr/bin/bash -c 'cd -- "$1" && exec makepkg --cleanbuild --force --nodeps --noconfirm' -- "$source_dir"
-        built=$(runuser -u "$user" -- env -u BASH_ENV -u ENV HOME="$user_home" \
-            /usr/bin/bash -c 'cd -- "$1" && exec makepkg --packagelist' -- "$source_dir")
-        [[ $built != *$'\n'* && -f $built ]] || die 'Expected exactly one built native package.'
-        packages+=("$built")
     done
-    # All archives are ready; hooks/checks stay enabled and builds remain offline.
+    if [[ $1 == coordinated || $1 == all ]]; then
+        for name in hyprcachy-upgrade-guard hyprcachy-window-session hyprcachy-tmux; do
+            [[ ${prepared[$name]:-} == true ]] || die "Missing prepared package: $name"
+        done
+    else
+        [[ ${prepared[hyprcachy-upgrade-guard]:-} == true ]] || die 'Missing prepared guard package.'
+    fi
     pacman -U --noconfirm -- "${packages[@]}"
+    if (( ${#dependencies[@]} )); then
+        pacman -D --asdeps -- "${dependencies[@]}" || {
+            printf 'Packages were installed, but dependency marking failed. Retry: sudo pacman -D --asdeps' >&2
+            printf ' %q' "${dependencies[@]}" >&2
+            printf '\n' >&2
+            exit 1
+        }
+    fi
 )
 
-# Repair an installed guard before it can block the first distribution upgrade.
-# A fresh target has no guard and gets its build prerequisites from that upgrade.
-native_components=(upgrade-guard window-session tmux)
-if [[ $(pacman -Qq -- hyprcachy-upgrade-guard 2>/dev/null || true) == hyprcachy-upgrade-guard ]]; then
+native_ready=false
+if [[ $(pacman -Qq -- hyprcachy-tmux 2>/dev/null || true) == hyprcachy-tmux ||
+      $(pacman -Qq -- hyprcachy-window-session 2>/dev/null || true) == hyprcachy-window-session ]]; then
+    # Include the new adapters in the transaction before an old patch can block -Syu.
+    echo 'Preparing the system upgrade and local native components together...'
+    install_native_packages coordinated
+    native_ready=true
+elif [[ $(pacman -Qq -- hyprcachy-upgrade-guard 2>/dev/null || true) == hyprcachy-upgrade-guard ]]; then
     echo 'Updating the installed native upgrade guard before the system upgrade...'
     install_native_packages upgrade-guard
-    native_components=(window-session tmux)
 fi
 
 # Upgrade together with dependency installation; never perform a partial Arch upgrade.
@@ -258,8 +271,8 @@ done
 bash ./setup.sh "$profile"
 ' -- "$profile"
 
-# Build components against the updated system; fresh installs include the guard.
-install_native_packages "${native_components[@]}"
+# Fresh installs build after prerequisites; coordinated reruns already installed these.
+if ! $native_ready; then install_native_packages all; fi
 
 # Replace only this owned system config; preserve each changed version first.
 workdir=$(mktemp -d)

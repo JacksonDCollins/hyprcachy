@@ -76,8 +76,11 @@ or Hyprland. A new tmux server is required; the command neither restarts one nor
 restores over live sessions.
 
 Ordinary `pacman -Syu` updates rebuild the companion from the exact signed stock
-package's recipe, preserve distribution patches, and apply our patch in the
-same frozen Btrfs/nspawn transaction check. Private terminal checks verify the
+package's recipe, preserve distribution patches, and apply the patch from your
+local Hyprcachy checkout in the same frozen Btrfs/nspawn transaction check.
+The companion records that checkout's path when built; its build script and patch
+are copied as data into private staging and executed only by the unprivileged
+candidate. No Hyprcachy Git fetch or pull occurs. Private terminal checks verify the
 bars before the upgrade may commit. Unknown recipes, patch conflicts and failed
 checks stop the upgrade for review; automatic updates do not imply automatic
 patch repair. See the companion README for activation and recovery details.
@@ -88,33 +91,48 @@ patch repair. See the companion README for activation and recovery details.
 ./update-native.sh
 ```
 
-Run as your normal user to explicitly build and install **all three** local
-packages: upgrade guard, window-session and tmux companion. This updates all
-native packages from this checkout. It includes both components even if not previously installed;
-use the component rebuild commands for single-package work after the guard is installed.
-All archives are built before one `sudo pacman -U` transaction. No live application
-is restarted, and ordinary pacman compatibility hooks remain enabled. **Reboot
-after installation.** Automatic migration from obsolete bundled guards is not
-supported; a reboot cannot repair a guard that blocks the installation itself.
-This updates local code, not distribution packages; continue using `pacman -Syu`
-for system updates. Extra arguments are not accepted.
+Run as your normal user to prepare a **full system upgrade plus all three local
+packages**: upgrade guard, window-session and tmux companion. The command first
+uses `pacman -Syu --downloadonly`, builds the companion against the selected incoming
+tmux archive (or the installed version when unchanged), and submits all planned
+system archives and local packages in one guarded `pacman -U` transaction. It does
+not install tmux first or bootstrap with a partial system upgrade. Changed plans,
+extra dependencies and repository replacement transitions are rejected rather than
+guessed; use ordinary `pacman -Syu` for replacement transitions before retrying.
+The coordinated plan is checked again under pacman's lock by the incoming adapter.
+After a successful install, newly pulled repository dependencies are marked with
+`pacman -D --asdeps`; existing package reasons and the native packages are left alone.
+Setup uses the same policy. If this bookkeeping fails, the packages are already
+installed and the command prints the exact metadata-only retry; do not repeat the
+whole upgrade just to repair install reasons.
+
+Code comes from this checkout, including local edits; nothing pulls Hyprcachy from
+GitHub. Exact verified upstream tmux sources may still be downloaded. Both components
+are included even if not previously installed; component rebuild commands stay
+component-only and require an installed compatible guard. No application is restarted.
+**Reboot after installation.** Obsolete bundled guards still require explicit repair.
+The internal `--prepare DIRECTORY` mode is used by root-owned setup to run only
+preparation/building as the user; setup itself handles download, installation and
+cleanup. Normal use needs no arguments.
 
 ## Fresh installation — partitioning required
 
-Boot a current Arch ISO in UEFI mode. Download **both** scripts together before
-starting (the installer checks for `setup.sh` before touching disks):
+Boot a current Arch ISO in UEFI mode. Obtain a **complete local source tree**,
+not just the two installer scripts. For example, explicitly clone it once:
 
 ```bash
-curl -fLO https://raw.githubusercontent.com/JacksonDCollins/hyprcachy/main/install.sh
-curl -fLO https://raw.githubusercontent.com/JacksonDCollins/hyprcachy/main/setup.sh
+git clone https://github.com/JacksonDCollins/hyprcachy.git
+cd hyprcachy
 less install.sh
 less setup.sh
 bash install.sh
 ```
 
-Alternatively clone this repository and run `bash install.sh` from it.
-Local installer changes must be published before the GitHub download/automatic
-boot commands can use them; alternatively copy both updated scripts to the USB.
+Alternatively copy the complete local tree, including unpublished changes, to the
+USB. The installer checks for the required helpers/packages before touching disks,
+then copies that tree into the created user's `~/hyprcachy` with user ownership.
+Setup and later updates do not clone or pull Hyprcachy. Publish installer changes
+before using the automatic boot download instead of your local copy.
 
 Before any target-disk writes, the installer waits up to one minute for NTP clock
 synchronization, downloads/caches the CachyOS repository bootstrap, fetches and
@@ -225,7 +243,10 @@ kernel options (press `e` in the boot menu for a one-time edit):
 script=https://raw.githubusercontent.com/JacksonDCollins/hyprcachy/refs/heads/main/boot.sh
 ```
 
-`boot.sh` downloads both scripts into a temporary directory and runs the installer.
+`boot.sh` explicitly downloads the complete source archive for the initial install
+and runs its installer. The installer retains the source tree in `~/hyprcachy`;
+this archive has no Git metadata. Subsequent setup/updates use those local files,
+not another Hyprcachy download.
 Internet access is required; download failures stop execution. Installation mode,
 region selection and confirmation remain interactive; automatic launch does not
 authorize disk erasure. No script needs to be embedded in the ISO.
@@ -234,12 +255,16 @@ ISO filesystem and its embedded EFI boot image; retain the normal menu defaults.
 
 ## Reapply configuration on an existing Hyprcachy install
 
-Keep a local copy of this repository, update it, review changes, then run:
+Keep the complete local source tree at `~/hyprcachy`, update/review its files
+yourself, then run:
 
 ```bash
-git pull --ff-only
+cd ~/hyprcachy
 sudo ./setup.sh
 ```
+
+Setup requires that user-owned persistent tree. It neither fetches Hyprcachy nor
+builds from a temporary copy whose recorded source path disappears afterward.
 
 Under sudo, setup uses `SUDO_USER`. When running from a root shell or configuring
 a different existing user, name that user explicitly:
@@ -252,13 +277,15 @@ sudo ./setup.sh jackson default  # explicitly change machine profile
 `setup.sh`:
 
 - Requires an existing non-root account and configured CachyOS repositories.
-- On an existing guarded system, builds and installs the current local guard
-  **before the first system upgrade**, so that upgrade uses current guard code.
-  Build prerequisites must already be satisfied; no hooks are disabled. The
-  installed guard still checks this bootstrap and can stop it on failure.
-  Fresh installations skip the bootstrap and install prerequisites first.
-  There are no bundled-guard migration branches or temporary overrides for old
-  hook formats. The supported guard declares preflight network access itself;
+- If a native component is installed, prepares the full system upgrade and all
+  current local native packages **together**, using the shared updater before
+  any installing `-Syu` can encounter an old adapter. Root downloads/installs;
+  preparation and builds run as the selected user without nested sudo prompts.
+  It does not rebuild these components again at the end. Existing native build
+  prerequisites must be available; failures stop setup without bypassing hooks.
+  With only a guard installed, updates that guard first. With no native components,
+  installs distribution/dotfiles prerequisites before building the local packages.
+  There are no bundled-guard migration branches or temporary hook overrides;
   candidate builds remain offline.
 - Performs a full `pacman -Syu --needed --noconfirm` transaction, including system
   upgrades and installation of the packages in its `PACKAGES` array. Review this

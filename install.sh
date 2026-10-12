@@ -325,9 +325,12 @@ stage() {
 [[ ${BASH_SOURCE[0]} == "$0" ]] || return 0
 export LC_ALL=C
 
-# Clone/download both scripts together; fail before touching disks if setup is missing.
+# Require the complete local checkout before touching disks; setup must retain it for upgrades.
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-[[ -r "$SCRIPT_DIR/setup.sh" ]] || { echo "setup.sh must be beside install.sh" >&2; exit 1; }
+[[ $SCRIPT_DIR != / && $SCRIPT_DIR != /mnt && $SCRIPT_DIR != /mnt/* ]] || die 'Keep the installer checkout outside /mnt and the filesystem root.'
+for file in setup.sh update-native.sh rebuild-native.sh packages/upgrade-guard/PKGBUILD packages/window-session/PKGBUILD packages/tmux/PKGBUILD; do
+    [[ -r "$SCRIPT_DIR/$file" ]] || die "A complete local Hyprcachy checkout is required; missing $file."
+done
 (( EUID == 0 )) || die "Run this installer as root."
 [[ -d /sys/firmware/efi/efivars ]] || die "This installer requires a UEFI boot."
 if findmnt -rn -R /mnt >/dev/null; then
@@ -643,9 +646,13 @@ unset ROOT_PASSWORD USER_PASSWORD
 
 # --- 9. REPEATABLE SYSTEM AND USER SETUP ---
 stage 'Installing graphics, desktop and user dotfiles'
-install -m 0700 "$SCRIPT_DIR/setup.sh" /mnt/root/hyprcachy-setup.sh
-arch-chroot /mnt /usr/bin/bash /root/hyprcachy-setup.sh "$NEW_USER"
-rm /mnt/root/hyprcachy-setup.sh
+checkout="/mnt/home/$NEW_USER/hyprcachy"
+[[ ! -e $checkout && ! -L $checkout ]] || die "Refusing to replace existing checkout: $checkout"
+cp -a --reflink=auto -- "$SCRIPT_DIR" "$checkout"
+target_uid=$(arch-chroot /mnt id -u "$NEW_USER")
+target_gid=$(arch-chroot /mnt id -g "$NEW_USER")
+chown -hR "$target_uid:$target_gid" "$checkout"
+arch-chroot /mnt /usr/bin/bash "/home/$NEW_USER/hyprcachy/setup.sh" "$NEW_USER"
 arch-chroot /mnt snapper --no-dbus -c root create --description "Initial installation"
 arch-chroot /mnt limine-snapper-sync
 

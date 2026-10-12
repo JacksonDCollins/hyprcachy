@@ -104,10 +104,18 @@ prefix identifies the guard's staging data. It checks root ownership, mode,
 processes, locks, mounts and nested subvolumes. It never removes pacman's lock,
 application snapshots or unrelated caches. Unexpected data requires inspection.
 
-`./update-native.sh` explicitly builds and installs the engine and both components
-in one transaction. `setup.sh` first bootstraps an installed guard before its
-system upgrade, then builds the components against the updated system. Fresh setup installs
-prerequisites first and all three local packages together. Bootstrap keeps normal
+`./update-native.sh` downloads the full system upgrade and builds the engine and
+both local components before one guarded installation transaction. It checks that
+the local install reproduces the complete planned package/version set. The incoming
+tmux adapter rechecks its coordinated database/configuration/plan receipt under
+pacman's lock. Repository replacement transitions require ordinary `pacman -Syu`
+first; the driver will not silently approximate them. When native components are
+already installed, `setup.sh` uses this shared coordinated preparation before any
+installing system upgrade; it does not update only the guard and leave old adapters
+in charge. Setup runs preparation/building as the selected user and installs as
+root, without requiring sudo from the build process. A guard-only system updates
+the guard first. Fresh setup installs prerequisites before all local native packages.
+All builds use the persistent user-owned `~/hyprcachy` tree. Bootstrap keeps normal
 hooks enabled and stops if prerequisites or the installed guard's checks fail. Component-only
 `rebuild-plugin.sh` / `rebuild-tmux.sh` require a compatible installed guard;
 they neither rebuild it nor update another package. Reboot after installation.

@@ -9,16 +9,45 @@ watch)
 prepare)
     input=$2 packages=$3
     archive=()
+    declare -A incoming_versions=()
+    incoming_companion=false
     for file in "$packages/"*.pkg.tar*; do
         [[ $file != *.sig ]] || continue
         identity=$(pacman -Qp -- "$file")
+        incoming_versions["${identity%% *}"]=${identity#* }
         [[ $identity != tmux\ * ]] || archive=("$file")
+        [[ $identity != hyprcachy-tmux\ * ]] || incoming_companion=true
     done
-    "$(dirname -- "$(realpath -- "${BASH_SOURCE[0]}")")/tmux-source" "$input/source" "${archive[@]}"
+    directory=$(dirname -- "$(realpath -- "${BASH_SOURCE[0]}")")
+    # Recheck the coordinated driver's plan under pacman's lock, not only before sudo.
+    if $incoming_companion && [[ -s $directory/update-plan ]]; then
+        source /usr/lib/hyprcachy/upgrade-guard/gate-lib.sh
+        mapfile -t expected < "$directory/update-plan"
+        (( ${#expected[@]} == 3 ))
+        for digest in "${expected[@]}"; do [[ $digest =~ ^[a-f0-9]{64}$ ]]; done
+        config=$(pacman-conf | sha256sum)
+        pacman -Sup --noconfirm --print-format $'%n\t%v\t%f\t%h\t%g' > "$input/upgrade.plan"
+        plan=$(sha256sum "$input/upgrade.plan")
+        [[ $(database_fingerprint /var/lib/pacman) == "${expected[0]}" &&
+           ${config%% *} == "${expected[1]}" && ${plan%% *} == "${expected[2]}" ]] || {
+            echo 'System upgrade plan changed while building; rerun update-native.sh.' >&2; exit 1;
+        }
+        while IFS=$'\t' read -r name version rest; do
+            [[ ${incoming_versions[$name]:-} == "$version" ]] || {
+                echo "Coordinated upgrade is missing $name $version; refusing a partial upgrade." >&2; exit 1;
+            }
+        done < "$input/upgrade.plan"
+        for name in hyprcachy-upgrade-guard hyprcachy-window-session hyprcachy-tmux; do
+            [[ -n ${incoming_versions[$name]:-} ]] || { echo "Coordinated upgrade is missing $name." >&2; exit 1; }
+        done
+    fi
+    bash -p "$directory/local-source" "$directory/source-directory" "$input/local"
+    "$directory/tmux-source" "$input/source" "${archive[@]}"
     ;;
 build)
     [[ $(pacman -Q tmux) == "tmux $(< "$2/source/upstream-version")" ]]
-    exec /usr/lib/hyprcachy/tmux/build "$2/source" "$3"
+    (cd -- "$2/local"; sha256sum --check --strict sources.sha256)
+    exec bash "$2/local/build" "$2/source" "$3"
     ;;
 artifacts)
     # Ordered publication: the version marker must follow the executable.

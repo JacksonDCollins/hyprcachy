@@ -1,25 +1,35 @@
 # Companion executable; the distribution continues to own /usr/bin/tmux.
 pkgname=hyprcachy-tmux
 pkgver=0.3.0
-pkgrel=3
+pkgrel=4
 pkgdesc='Split top/bottom tmux status with guarded automatic rebuilds'
 arch=('x86_64')
 license=('BSD')
-depends=('tmux' 'hyprcachy-upgrade-guard>=0.2.0' 'base-devel' 'git' 'curl')
+depends=('tmux' 'hyprcachy-upgrade-guard>=0.2.0' 'base-devel' 'git' 'curl' 'util-linux')
 options=('!debug' '!strip' '!lto')
 source=('split-status.patch' 'build' 'hyprcachy-tmux' 'README.md'
-        'tmux-source' 'upgrade-adapter')
+        'tmux-source' 'upgrade-adapter' 'local-source')
 # Local checkout files require review; the stock recipe's source digests do not get skipped.
-sha256sums=('SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP')
+sha256sums=('SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP')
 
 build() {
-    bash -p ./tmux-source "$srcdir/upstream"
+    local archive=()
+    [[ -z ${HYPRCACHY_TMUX_PACKAGE:-} ]] || archive=("$HYPRCACHY_TMUX_PACKAGE")
+    bash -p ./tmux-source "$srcdir/upstream" "${archive[@]}"
     bash ./build "$srcdir/upstream" "$srcdir/output"
 }
 
 package() {
     install -Dm755 upgrade-adapter "$pkgdir/usr/lib/hyprcachy/upgrade.d/$pkgname/adapter"
     install -Dm755 tmux-source "$pkgdir/usr/lib/hyprcachy/upgrade.d/$pkgname/tmux-source"
+    install -Dm755 local-source "$pkgdir/usr/lib/hyprcachy/upgrade.d/$pkgname/local-source"
+    # Record the checkout, not the invoking user's HOME inside a root pacman hook.
+    printf '%s\n' "$(realpath -- "$startdir")" > "$pkgdir/usr/lib/hyprcachy/upgrade.d/$pkgname/source-directory"
+    if [[ -n ${HYPRCACHY_UPDATE_PLAN:-} ]]; then
+        install -m644 "$HYPRCACHY_UPDATE_PLAN" "$pkgdir/usr/lib/hyprcachy/upgrade.d/$pkgname/update-plan"
+    else
+        install -m644 /dev/null "$pkgdir/usr/lib/hyprcachy/upgrade.d/$pkgname/update-plan"
+    fi
     install -Dm755 output/tmux "$pkgdir/usr/lib/hyprcachy/tmux/tmux"
     install -Dm644 output/tmux.version "$pkgdir/usr/lib/hyprcachy/tmux/upstream-version"
     install -Dm755 hyprcachy-tmux "$pkgdir/usr/bin/hyprcachy-tmux"

@@ -109,8 +109,8 @@ when its native dependency closures change, or this package or the guard is
 updated. Successful compilation is not a runtime/compositor test. See the
 guard documentation for failure handling, transaction limits and cleanup.
 
-`./update-native.sh` explicitly builds and installs the guard, plugin and tmux
-companion in one transaction. `./rebuild-plugin.sh` only rebuilds this plugin and
+`./update-native.sh` prepares a full system upgrade and installs it with the local
+guard, plugin and tmux companion in one guarded transaction. `./rebuild-plugin.sh` only rebuilds this plugin and
 never initiates that coordinated update. Reboot after installation. Automatic
 migration from obsolete bundled guards is not supported; rebooting does not
 repair an incompatible guard that blocks installation.
