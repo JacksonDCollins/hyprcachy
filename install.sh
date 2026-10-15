@@ -112,12 +112,12 @@ confirm_installation() {
     lsblk -dno NAME,SIZE,MODEL "$TARGET_DISK"
     if [[ $INSTALL_MODE == 1 ]]; then
         echo "Mode: alongside; preserve existing partitions on $TARGET_DISK."
-        printf 'New EFI: sectors %s–%s (2 GiB); new Btrfs root: sectors %s–%s (%s).\n' \
-            "$EFI_START" "$((ROOT_START - 1))" "$ROOT_START" "$REGION_END" \
-            "$(numfmt --to=iec-i --suffix=B "$((ROOT_SECTORS * SECTOR_SIZE))")"
+        printf 'New EFI: sectors %s–%s (2 GiB); new Btrfs root: sectors %s–%s (%s); new swap: sectors %s–%s (16 GiB, priority 10).\n' \
+            "$EFI_START" "$((ROOT_START - 1))" "$ROOT_START" "$((SWAP_START - 1))" \
+            "$(numfmt --to=iec-i --suffix=B "$((ROOT_SECTORS * SECTOR_SIZE))")" "$SWAP_START" "$REGION_END"
         expected="INSTALL $TARGET_DISK"
     else
-        echo "Mode: ERASE ALL DATA on $TARGET_DISK; create 2 GiB EFI plus Btrfs root using the rest."
+        echo "Mode: ERASE ALL DATA on $TARGET_DISK; create 2 GiB EFI, Btrfs root, then 16 GiB swap (priority 10) at the end."
         expected="ERASE $TARGET_DISK"
     fi
     printf 'Hostname: %s\nUser: %s\nTimezone: %s\nLocale: %s\nConsole keymap: %s\n' \
@@ -141,7 +141,9 @@ plan_free_region() {
     REGION_END=$(((end + 1) / alignment * alignment - 1))
     EFI_SECTORS=$((2 * 1024 * 1024 * 1024 / sector_size))
     ROOT_START=$((EFI_START + EFI_SECTORS))
-    ROOT_SECTORS=$((REGION_END - ROOT_START + 1))
+    SWAP_SECTORS=$((16 * 1024 * 1024 * 1024 / sector_size))
+    SWAP_START=$((REGION_END - SWAP_SECTORS + 1))
+    ROOT_SECTORS=$((SWAP_START - ROOT_START))
     (( ROOT_SECTORS >= 16 * 1024 * 1024 * 1024 / sector_size ))
 }
 
@@ -210,11 +212,11 @@ append_layout() (
         || die "Partition write failed; do not format manually. Inspect $backup/write.log and backups."
     after=$(read_gpt "$disk" "$backup/validation.log") || die "Post-write GPT validation failed; no formatting performed."
     # sfdisk can return success without adding entries when GPT slots are full.
-    for uuid in "$EFI_PARTUUID" "$ROOT_PARTUUID"; do
+    for uuid in "$EFI_PARTUUID" "$SWAP_PARTUUID" "$ROOT_PARTUUID"; do
         [[ $(grep -icF "uuid=$uuid" <<< "$after") == 1 ]] \
-            || die "Both new GPT entries could not be confirmed; no formatting performed. Inspect $backup."
+            || die "All three new GPT entries could not be confirmed; no formatting performed. Inspect $backup."
     done
-    preserved=$(printf '%s\n' "$after" | grep -viF -e "uuid=$EFI_PARTUUID" -e "uuid=$ROOT_PARTUUID")
+    preserved=$(printf '%s\n' "$after" | grep -viF -e "uuid=$EFI_PARTUUID" -e "uuid=$SWAP_PARTUUID" -e "uuid=$ROOT_PARTUUID")
     [[ $preserved == "$current" ]] || die "Existing partition metadata changed; no formatting performed. Inspect $backup."
 )
 
@@ -415,6 +417,11 @@ TARGET_DISK=$(readlink -f -- "$TARGET_DISK")
 [[ -b "$TARGET_DISK" ]] || die "$TARGET_DISK is not a valid block device."
 [[ "$(lsblk -dno TYPE "$TARGET_DISK")" == "disk" ]] || die "$TARGET_DISK is not a whole disk."
 assert_disk_idle
+for tool in mkswap blkid blockdev; do
+    command -v "$tool" >/dev/null || die "Required tool missing: $tool"
+done
+SECTOR_SIZE=$(blockdev --getss "$TARGET_DISK")
+[[ $SECTOR_SIZE == 512 || $SECTOR_SIZE == 4096 ]] || die "Unsupported logical sector size."
 lsblk -o NAME,SIZE,FSTYPE,LABEL,PARTLABEL "$TARGET_DISK"
 
 echo "1) Install alongside an existing OS, using one unallocated region (GPT only)"
@@ -429,10 +436,8 @@ case "$INSTALL_MODE" in
         PLAN_DIR=$(mktemp -d)
         read_gpt "$TARGET_DISK" "$PLAN_DIR/errors" > "$PLAN_DIR/before.dump" \
             || die "Alongside installation requires a healthy, non-hybrid GPT. Nothing was changed."
-        SECTOR_SIZE=$(blockdev --getss "$TARGET_DISK")
-        [[ $SECTOR_SIZE == 512 || $SECTOR_SIZE == 4096 ]] || die "Unsupported logical sector size."
         regions=$(eligible_regions "$TARGET_DISK" "$SECTOR_SIZE") || die "Could not read free regions."
-        [[ -n $regions ]] || die "No contiguous unallocated region fits 2 GiB EFI plus at least 16 GiB root."
+        [[ -n $regions ]] || die "No contiguous unallocated region fits 2 GiB EFI, 16 GiB swap and at least 16 GiB root."
         mapfile -t REGIONS <<< "$regions"
         echo "Eligible unallocated regions (the entire selected region will be used):"
         for i in "${!REGIONS[@]}"; do
@@ -447,11 +452,14 @@ case "$INSTALL_MODE" in
         read -r first last <<< "${REGIONS[region - 1]}"
         plan_free_region "$first" "$last" "$SECTOR_SIZE" || die "Invalid region geometry."
         read -r EFI_PARTUUID < /proc/sys/kernel/random/uuid
+        read -r SWAP_PARTUUID < /proc/sys/kernel/random/uuid
         read -r ROOT_PARTUUID < /proc/sys/kernel/random/uuid
-        printf 'start=%s, size=%s, type=U, uuid=%s, name="HYPRCACHY_EFI"\nstart=%s, size=%s, type=L, uuid=%s, name="HYPRCACHY_ROOT"\n' \
-            "$EFI_START" "$EFI_SECTORS" "$EFI_PARTUUID" "$ROOT_START" "$ROOT_SECTORS" "$ROOT_PARTUUID" > "$PLAN_DIR/layout"
-        printf 'NEW EFI: sectors %s–%s (2 GiB); NEW Btrfs root: sectors %s–%s (%s).\n' \
-            "$EFI_START" "$((ROOT_START - 1))" "$ROOT_START" "$REGION_END" "$(numfmt --to=iec-i --suffix=B "$((ROOT_SECTORS * SECTOR_SIZE))")"
+        printf 'start=%s, size=%s, type=U, uuid=%s, name="HYPRCACHY_EFI"\nstart=%s, size=%s, type=L, uuid=%s, name="HYPRCACHY_ROOT"\nstart=%s, size=%s, type=S, uuid=%s, name="HYPRCACHY_SWAP"\n' \
+            "$EFI_START" "$EFI_SECTORS" "$EFI_PARTUUID" "$ROOT_START" "$ROOT_SECTORS" "$ROOT_PARTUUID" \
+            "$SWAP_START" "$SWAP_SECTORS" "$SWAP_PARTUUID" > "$PLAN_DIR/layout"
+        printf 'NEW EFI: sectors %s–%s (2 GiB); NEW Btrfs root: sectors %s–%s (%s); NEW swap: sectors %s–%s (16 GiB).\n' \
+            "$EFI_START" "$((ROOT_START - 1))" "$ROOT_START" "$((SWAP_START - 1))" \
+            "$(numfmt --to=iec-i --suffix=B "$((ROOT_SECTORS * SECTOR_SIZE))")" "$SWAP_START" "$REGION_END"
         echo "Existing partitions/EFI files will not be formatted or reused. No OS scan will run."
         echo "Limine will add a firmware boot entry and may become the default; existing entries remain."
         echo "Back up important data and any BitLocker recovery key before proceeding."
@@ -459,6 +467,10 @@ case "$INSTALL_MODE" in
         ;;
     2)
         command -v sgdisk >/dev/null || die "Required tool missing: sgdisk"
+        disk_bytes=$(blockdev --getsize64 "$TARGET_DISK")
+        # Leave alignment/GPT headroom as well as at least 16 GiB for root.
+        (( disk_bytes >= (2 + 16 + 16) * 1024 * 1024 * 1024 + 2 * 1024 * 1024 )) \
+            || die "Disk is too small for 2 GiB EFI, 16 GiB swap and at least 16 GiB root."
         ;;
     *) die "Invalid installation mode." ;;
 esac
@@ -498,27 +510,40 @@ if [[ $INSTALL_MODE == 1 ]]; then
 else
     echo "Wiping and partitioning $TARGET_DISK..."
     sgdisk --zap-all "$TARGET_DISK"
-    # 2 GiB EFI/Boot leaves room for kernels retained with bootable snapshots.
-    sgdisk --new=1:0:+2G --typecode=1:ef00 --change-name=1:"EFI" "$TARGET_DISK"
-    sgdisk --new=2:0:0 --typecode=2:8300 --change-name=2:"ROOT" "$TARGET_DISK"
+    sgdisk --clear "$TARGET_DISK"
+    first=$(sgdisk --first-aligned-in-largest "$TARGET_DISK")
+    last=$(sgdisk --end-of-largest "$TARGET_DISK")
+    plan_free_region "$first" "$last" "$SECTOR_SIZE" || die "Invalid new GPT region geometry; no formatting performed."
+    sgdisk --new="1:$EFI_START:$((ROOT_START - 1))" --typecode=1:ef00 --change-name=1:"EFI" "$TARGET_DISK"
+    sgdisk --new="2:$ROOT_START:$((SWAP_START - 1))" --typecode=2:8300 --change-name=2:"ROOT" "$TARGET_DISK"
+    sgdisk --new="3:$SWAP_START:$REGION_END" --typecode=3:8200 --change-name=3:"HYPRCACHY_SWAP" "$TARGET_DISK"
 fi
 partprobe "$TARGET_DISK"
 udevadm settle
 
 if [[ $INSTALL_MODE == 1 ]]; then
     EFI_PART=$(new_partition_device "$EFI_PARTUUID" "$EFI_START" "$EFI_SECTORS") || die "New EFI device/geometry could not be verified; no formatting performed."
+    SWAP_PART=$(new_partition_device "$SWAP_PARTUUID" "$SWAP_START" "$SWAP_SECTORS") || die "New swap device/geometry could not be verified; no formatting performed."
     ROOT_PART=$(new_partition_device "$ROOT_PARTUUID" "$ROOT_START" "$ROOT_SECTORS") || die "New root device/geometry could not be verified; no formatting performed."
 else
     EFI_PART="$(lsblk -nrpo NAME,PARTN "$TARGET_DISK" | awk '$2 == 1 { print $1; exit }')"
     ROOT_PART="$(lsblk -nrpo NAME,PARTN "$TARGET_DISK" | awk '$2 == 2 { print $1; exit }')"
+    SWAP_PART="$(lsblk -nrpo NAME,PARTN "$TARGET_DISK" | awk '$2 == 3 { print $1; exit }')"
 fi
-[[ -b "$EFI_PART" && -b "$ROOT_PART" && $EFI_PART != "$ROOT_PART" ]] || die "The new partition devices did not appear."
+[[ -b "$EFI_PART" && -b "$SWAP_PART" && -b "$ROOT_PART" &&
+   $EFI_PART != "$ROOT_PART" && $SWAP_PART != "$ROOT_PART" && $SWAP_PART != "$EFI_PART" ]] \
+    || die "The new partition devices did not appear or are not distinct."
+[[ $(blockdev --getsize64 "$SWAP_PART") == 17179869184 ]] \
+    || die "New swap device is not exactly 16 GiB; no formatting performed."
 
 # --- 4. BTRFS & SUBVOLUME CREATION ---
 assert_disk_idle
 stage 'Formatting only the selected new filesystems'
 mkfs.vfat -F32 "$EFI_PART"
 mkfs.btrfs -f "$ROOT_PART"
+mkswap --label HYPRCACHY_SWAP "$SWAP_PART"
+SWAP_UUID=$(blkid -s UUID -o value "$SWAP_PART")
+[[ -n $SWAP_UUID ]] || die "Could not determine the swap filesystem UUID."
 
 # Create standard flat subvolume layout.
 mount "$ROOT_PART" /mnt
@@ -549,7 +574,10 @@ stage 'Installing Arch base packages'
 pacstrap -K /mnt base linux-firmware btrfs-progs snapper snap-pac limine \
     networkmanager sudo efibootmgr zsh
 
-genfstab -U /mnt >> /mnt/etc/fstab
+# Do not inherit live-ISO swap devices/files into the installed system.
+genfstab -U /mnt | awk '$3 != "swap"' >> /mnt/etc/fstab
+# Configure first-boot activation without enabling target swap on the live ISO.
+printf 'UUID=%s none swap defaults,pri=10 0 0\n' "$SWAP_UUID" >> /mnt/etc/fstab
 
 # Set console input before kernel hooks build the initramfs. UWSM's user
 # services inherit these standard XKB variables via systemd environment.d.
@@ -620,7 +648,8 @@ systemctl enable snapper-cleanup.timer
 # --- 8. LIMINE BOOTLOADER ARCHITECTURE ---
 echo "Deploying and configuring Limine Bootloader..."
 printf 'ESP_PATH="/boot"\nFIND_BOOTLOADERS=no\n' > /etc/default/limine
-printf 'root=UUID=%s rootflags=subvol=@ rw quiet\n' "$root_uuid" > /etc/kernel/cmdline
+# Zram already supplies compressed swap; do not put zswap in front of it.
+printf 'root=UUID=%s rootflags=subvol=@ rw quiet zswap.enabled=0\n' "$root_uuid" > /etc/kernel/cmdline
 
 if grep '^HOOKS=' /etc/mkinitcpio.conf | grep -qw systemd; then
     overlay_hook=sd-btrfs-overlayfs

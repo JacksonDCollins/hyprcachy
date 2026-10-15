@@ -19,8 +19,19 @@ Setup installs `zram-generator` and, unless local zram configuration already exi
 configures `/dev/zram0` with zstd compression and a logical swap size of half RAM
 (priority 100). Memory is allocated as used, not reserved upfront. Swap starts
 immediately on an existing system or at first boot after installation. Existing
-local zram configuration and disk-backed swap are left untouched. Zram does not
-provide hibernation; that requires separately configured disk-backed swap.
+local zram configuration and disk-backed swap are left untouched by `setup.sh`.
+
+Fresh installs in either mode create a separate **16 GiB Linux swap partition**
+(`HYPRCACHY_SWAP`), registered by filesystem UUID in `/etc/fstab` at **priority 10**.
+Zram's priority 100 is preferred; disk swap provides overflow capacity without
+Btrfs swapfile restrictions. Target disk swap is formatted but never activated on
+the live ISO; it starts at first boot. New installs disable zswap through
+`zswap.enabled=0` because zram already provides compressed swap.
+
+This is overflow swap, not a configured hibernation/resume setup. The installer
+creates unencrypted storage, so disk swap can persist sensitive memory contents.
+Existing systems require a separately reviewed manual partitioning procedure;
+rerunning `setup.sh` does not resize partitions or add disk swap.
 
 ## Optional window-session restoration
 
@@ -187,13 +198,14 @@ legacy Ctrl+Alt+Backspace termination option is not enabled.
 Choose an installation mode:
 
 - **Install alongside an existing OS** (default): select one contiguous
-  unallocated region on a healthy GPT disk. Creates a separate **2 GiB EFI/boot**
-  partition and a Btrfs root using the rest of that region. At least **18 GiB**
-  of aligned free space is required; **40 GiB or more is recommended** for apps,
-  development tools and snapshots. Existing partitions, including other EFI
+  unallocated region on a healthy GPT disk. Creates **2 GiB EFI/boot** first,
+  **Btrfs root** in the middle, and **16 GiB swap** at the end of that region.
+  At least **34 GiB** of aligned free space is required (including 16 GiB for root);
+  **64 GiB or more is recommended** for apps, development tools and snapshots. Existing partitions, including other EFI
   partitions, are not formatted, resized or reused. Confirm with `INSTALL /dev/…`.
 - **Erase disk**: destroys the entire selected disk, with a separate
-  `ERASE /dev/…` confirmation.
+  `ERASE /dev/…` confirmation. Creates the same EFI/root/swap arrangement; requires
+  at least 34 GiB plus 2 MiB of alignment/GPT headroom before any disk writes.
 
 After hostname, username and password entry, a **final review** shows the target
 disk, proposed disk changes, timezone, locale, and console/desktop keyboard choices.
