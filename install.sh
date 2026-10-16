@@ -648,8 +648,8 @@ systemctl enable snapper-cleanup.timer
 # --- 8. LIMINE BOOTLOADER ARCHITECTURE ---
 echo "Deploying and configuring Limine Bootloader..."
 printf 'ESP_PATH="/boot"\nFIND_BOOTLOADERS=no\n' > /etc/default/limine
-# Zram already supplies compressed swap; do not put zswap in front of it.
-printf 'root=UUID=%s rootflags=subvol=@ rw quiet zswap.enabled=0\n' "$root_uuid" > /etc/kernel/cmdline
+# Bound the compressed RAM cache and allow cold cached pages to be reclaimed.
+printf 'root=UUID=%s rootflags=subvol=@ rw quiet zswap.enabled=1 zswap.compressor=zstd zswap.max_pool_percent=20 zswap.shrinker_enabled=1\n' "$root_uuid" > /etc/kernel/cmdline
 
 if grep '^HOOKS=' /etc/mkinitcpio.conf | grep -qw systemd; then
     overlay_hook=sd-btrfs-overlayfs

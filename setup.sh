@@ -8,7 +8,7 @@ PACKAGES=(
     pipewire wireplumber pipewire-pulse pipewire-alsa
     xdg-desktop-portal-hyprland xdg-desktop-portal-gtk hyprpolkitagent
     qt5-wayland qt6-wayland noto-fonts networkmanager bluez upower
-    chwd pciutils linux-firmware zram-generator
+    chwd pciutils linux-firmware
     btrfs-progs pacman-contrib base-devel curl
 )
 
@@ -164,22 +164,6 @@ install_packages() {
     pacman -Syu --needed --noconfirm -- "$@"
 }
 install_packages "${PACKAGES[@]}"
-
-# Preserve existing local zram configuration. The generator activates swap at boot.
-if [[ ! -e /etc/systemd/zram-generator.conf && ! -L /etc/systemd/zram-generator.conf &&
-      ! -d /etc/systemd/zram-generator.conf.d ]]; then
-    cat > /etc/systemd/zram-generator.conf <<'ZRAM'
-[zram0]
-zram-size = ram / 2
-compression-algorithm = zstd
-swap-priority = 100
-ZRAM
-    # Never activate target swap on the live ISO while installing in a chroot.
-    if ! systemd-detect-virt --chroot --quiet; then
-        systemctl daemon-reload
-        systemctl start dev-zram0.swap
-    fi
-fi
 
 # Use maintained GPU profiles, including legacy NVIDIA and hybrid laptops.
 # Running inside arch-chroot makes / the target; never select kernels with uname -r

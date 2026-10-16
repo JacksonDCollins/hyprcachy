@@ -15,23 +15,32 @@ No dotfiles script is executed as root.
 
 Publish the dotfiles dependency list before publishing this Hyprcachy integration.
 
-Setup installs `zram-generator` and, unless local zram configuration already exists,
-configures `/dev/zram0` with zstd compression and a logical swap size of half RAM
-(priority 100). Memory is allocated as used, not reserved upfront. Swap starts
-immediately on an existing system or at first boot after installation. Existing
-local zram configuration and disk-backed swap are left untouched by `setup.sh`.
+Hyprcachy's only provisioned swap configuration is **zswap backed by disk swap**;
+it does not install or configure zram. Fresh installs in either mode create a
+**16 GiB Linux swap partition** (`HYPRCACHY_SWAP`) at the end of the selected region,
+registered by filesystem UUID in `/etc/fstab` at **priority 10**. Target disk swap
+is formatted but never activated on the live ISO; it starts at first boot.
 
-Fresh installs in either mode create a separate **16 GiB Linux swap partition**
-(`HYPRCACHY_SWAP`), registered by filesystem UUID in `/etc/fstab` at **priority 10**.
-Zram's priority 100 is preferred; disk swap provides overflow capacity without
-Btrfs swapfile restrictions. Target disk swap is formatted but never activated on
-the live ISO; it starts at first boot. New installs disable zswap through
-`zswap.enabled=0` because zram already provides compressed swap.
+The installer sets these kernel parameters in `/etc/kernel/cmdline`:
+
+```text
+zswap.enabled=1 zswap.compressor=zstd zswap.max_pool_percent=20 zswap.shrinker_enabled=1
+```
+
+Zswap caches swapped pages using zstd, with compressed storage capped at **20% of
+physical RAM** (about 6.2 GiB on a machine reporting 31 GiB RAM). It grows on demand,
+not as a reservation. Cache eviction writes pages to disk, and the enabled shrinker
+allows cold cached pages to be reclaimed under memory pressure. The cache uses
+slots in the disk swap area: total swap capacity remains **16 GiB**, not 16 GiB
+plus the cache size. Zswap is built into the kernel; no extra swap daemon or
+`zram-generator` dependency is needed.
 
 This is overflow swap, not a configured hibernation/resume setup. The installer
 creates unencrypted storage, so disk swap can persist sensitive memory contents.
-Existing systems require a separately reviewed manual partitioning procedure;
-rerunning `setup.sh` does not resize partitions or add disk swap.
+Existing systems require a separately reviewed manual migration: configure disk
+swap, update the kernel parameters and boot configuration, and retire any old zram
+configuration/package. `setup.sh` does not resize partitions, rewrite existing swap
+policy, uninstall old packages, or drain active swap automatically.
 
 ## Optional window-session restoration
 
