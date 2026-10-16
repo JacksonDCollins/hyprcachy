@@ -4,7 +4,7 @@ Minimal Arch/CachyOS installation with Btrfs, Snapper, Limine, Hyprland, UWSM,
 and user dotfiles.
 
 Hyprcachy installs the OS and desktop infrastructure, plus Git and Stow for
-bootstrapping dotfiles. Dotfiles own their user applications (Foot, Neovim, tmux,
+bootstrapping dotfiles. Dotfiles own their user applications (Foot, Neovim, vis, tmux,
 and the Quickshell wallpaper shell) and supporting tools, fonts, and development
 dependencies. These do not belong in Hyprcachy's system package list.
 Dotfiles own `packages-arch.txt` and a standalone `setup.sh` bootstrap. Hyprcachy
@@ -12,6 +12,11 @@ reads and validates that package list after cloning/updating dotfiles, installs
 its packages with pacman, then calls dotfiles' `setup.sh` once as the user.
 Dotfiles own configuration/runtime setup sequencing and runtime versions.
 No dotfiles script is executed as root.
+
+The dotfiles package list includes `vis`, `vis-lexers`, and `lua-lpeg`; pacman
+also supplies vis's Lua and TRE dependencies. Git and Wayland clipboard support
+are already provisioned, and vis-lspc reuses the mise-managed language servers.
+The vis configuration bootstraps vis-plug and vis-lspc on first editor startup.
 
 Publish the dotfiles dependency list before publishing this Hyprcachy integration.
 
