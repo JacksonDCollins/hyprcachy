@@ -13,7 +13,7 @@ lock_state() {
     flock "$@" 9
 }
 database_fingerprint() {
-    (cd -- "$1" && find . -type f ! -path './db.lck' -print0 | LC_ALL=C sort -z | xargs -0 sha256sum) | sha256sum | cut -d ' ' -f 1
+    (cd -- "$1" && find . -type d -path './sync/download-*' -prune -o -type f ! -path './db.lck' -print0 | LC_ALL=C sort -z | xargs -0 sha256sum) | sha256sum | cut -d ' ' -f 1
 }
 same_targets() {
     local a b
