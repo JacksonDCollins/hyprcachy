@@ -1,3 +1,5 @@
+# THIS IS VIBECODED SLOP, USE AT YOUR OWN RISK
+
 # Hyprcachy
 
 Minimal Arch/CachyOS installation with Btrfs, Snapper, Limine, Hyprland, UWSM,
