@@ -120,9 +120,12 @@ patch repair. See the companion README for activation and recovery details.
 
 Run as your normal user to prepare a **full system upgrade plus all three local
 packages**: upgrade guard, window-session and tmux companion. The command first
-uses `pacman -Syu --downloadonly`, builds the companion against the selected incoming
-tmux archive (or the installed version when unchanged), and submits all planned
-system archives and local packages in one guarded `pacman -U` transaction. It does
+uses `pacman -Syu --downloadonly` and freezes the package plan, local recipes and
+verified tmux build inputs. It upgrades a disposable Btrfs snapshot to those exact
+packages, then runs makepkg there as an unprivileged user with networking disabled.
+The plugin therefore builds against the incoming Hyprland headers and libraries,
+not the host's older version. All planned system archives and the three built
+packages are then submitted in one guarded `pacman -U` transaction. It does
 not install tmux first or bootstrap with a partial system upgrade. Changed plans,
 extra dependencies and repository replacement transitions are rejected rather than
 guessed; use ordinary `pacman -Syu` for replacement transitions before retrying.
@@ -137,6 +140,19 @@ Code comes from this checkout, including local edits; nothing pulls Hyprcachy fr
 GitHub. Exact verified upstream tmux sources may still be downloaded. Both components
 are included even if not previously installed; component rebuild commands stay
 component-only and require an installed compatible guard. No application is restarted.
+
+`sudo ./setup.sh <username> [profile]` uses the same staged build on systems with
+native components already installed; fresh setup still installs prerequisites first.
+Root only freezes inputs, manages the snapshot and installs packages. PKGBUILDs
+never run as root. Package hooks/scriptlets are suppressed only inside the trial
+snapshot; the final host transaction retains its normal signature checks and guard.
+Build failure stops before host installation, and scratch snapshots are removed.
+Container builds receive no signing keys; sites requiring signatures on local
+packages must arrange signing before installation, not weaken pacman's policy.
+
+Run `python tests/test_staged_native.py` for unprivileged orchestration tests using
+fake package/privileged commands. Real Btrfs/nspawn execution requires a separate
+privileged integration check.
 **Reboot after installation.** Obsolete bundled guards still require explicit repair.
 The internal `--prepare DIRECTORY` mode is used by root-owned setup to run only
 preparation/building as the user; setup itself handles download, installation and

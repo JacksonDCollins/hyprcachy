@@ -88,8 +88,8 @@ hyprctl repl 'return hyprcachy_window_session.save()' # queues an explicit check
 Startup discovery, snapshot reads/writes, archival, process-command reads, and
 snapshot encoding/decoding run on a native worker with its own Lua state. Only
 copied plain data crosses threads; live windows and compositor APIs stay on the
-main thread. The controller yields dispatcher objects to its main-state timer,
-which invokes `hl.dispatch` and returns the result to the suspended coroutine.
+main thread. On the required Hyprland 0.57+, the controller calls `hl.dispatch`
+inside its coroutine; only asynchronous file jobs yield back to the timer.
 Hyprland's opaque dispatcher objects are never called directly, and no dispatcher
 runs on the file worker. The controller awaits completed jobs rather than blocking
 a callback, increasing Hyprland's watchdog limit, or retrying a function against

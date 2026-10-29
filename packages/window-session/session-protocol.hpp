@@ -4,6 +4,7 @@
 #include <set>
 #include <tuple>
 #include <hyprland/src/protocols/XDGShell.hpp>
+#include <hyprland/src/protocols/core/Compositor.hpp>
 #if __has_include(<hyprland/protocols/xx-session-management-v1.hpp>) || __has_include(<hyprland/protocols/xdg-session-management-v1.hpp>)
 #error Review Hyprland native session-management support before advertising another global
 #endif
@@ -350,7 +351,9 @@ public:
     }
     int identity(lua_State* L) const {
         const auto window = SessionState::window(L, 1);
-        const auto xdg = window->m_xdgSurface ? window->m_xdgSurface->m_toplevel.lock() : nullptr;
+        const auto surface = window->resource();
+        const auto role = surface ? dynamic_cast<CXDGSurfaceRole*>(surface->m_role.get()) : nullptr;
+        const auto xdg = role && role->m_xdgSurface ? role->m_xdgSurface->m_toplevel.lock() : nullptr;
         const auto [current, restored, managed] = identify(xdg.get());
         if (!current.empty()) lua_pushlstring(L, current.data(), current.size()); else lua_pushnil(L);
         if (!restored.empty()) lua_pushlstring(L, restored.data(), restored.size()); else lua_pushnil(L);

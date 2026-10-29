@@ -94,6 +94,7 @@ install_native_packages() (
     local -A prepared=()
     local -a packages=() dependencies=() builder=(runuser -u "$user" -- env -u BASH_ENV -u ENV
         -u HYPRCACHY_TMUX_PACKAGE -u HYPRCACHY_UPDATE_PLAN
+        -u HYPRCACHY_TMUX_INPUT -u HYPRCACHY_TMUX_SOURCE_DIRECTORY
         HOME="$user_home" USER="$user" LOGNAME="$user" /usr/bin/bash)
     build=$(mktemp -d /tmp/hyprcachy-native.XXXXXX)
     trap 'runuser -u "$user" -- /usr/bin/rm -rf -- "$build"; [[ -z $manifest ]] || rm -f -- "$manifest"' EXIT
@@ -103,6 +104,8 @@ install_native_packages() (
     if [[ $1 == coordinated ]]; then
         pacman -Syu --downloadonly --noconfirm
         "${builder[@]}" "$source_checkout/update-native.sh" --prepare "$build"
+        /usr/bin/bash -p "$source_checkout/update-native.sh" --build-staged "$build" "$uid"
+        "${builder[@]}" "$source_checkout/update-native.sh" --finish "$build"
     else
         "${builder[@]}" "$source_checkout/rebuild-native.sh" "$1" --package-list "$build/packages.list"
     fi

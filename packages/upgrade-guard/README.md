@@ -105,15 +105,18 @@ processes, locks, mounts and nested subvolumes. It never removes pacman's lock,
 application snapshots or unrelated caches. Unexpected data requires inspection.
 
 `./update-native.sh` downloads the full system upgrade and builds the engine and
-both local components before one guarded installation transaction. It checks that
+both local components in a separate Btrfs/nspawn snapshot upgraded to the frozen
+incoming repository packages. This package-build stage does not replace the final
+locked compatibility preflight. Before one guarded installation transaction, it checks that
 the local install reproduces the complete planned package/version set. The incoming
 tmux adapter rechecks its coordinated database/configuration/plan receipt under
 pacman's lock. Repository replacement transitions require ordinary `pacman -Syu`
 first; the driver will not silently approximate them. When native components are
 already installed, `setup.sh` uses this shared coordinated preparation before any
 installing system upgrade; it does not update only the guard and leave old adapters
-in charge. Setup runs preparation/building as the selected user and installs as
-root, without requiring sudo from the build process. A guard-only system updates
+in charge. Setup prepares inputs as the selected user, manages the snapshot as root,
+and builds packages inside it as an unprivileged user. It installs as root without
+requiring sudo from the build process. A guard-only system updates
 the guard first. Fresh setup installs prerequisites before all local native packages.
 All builds use the persistent user-owned `~/hyprcachy` tree. Bootstrap keeps normal
 hooks enabled and stops if prerequisites or the installed guard's checks fail. Component-only

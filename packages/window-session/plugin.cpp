@@ -3,9 +3,10 @@
 #include <map>
 #include <vector>
 #include <hyprland/src/plugins/PluginAPI.hpp>
-#include <hyprland/src/state/WorkspaceState.hpp>
-#include <hyprland/src/desktop/Workspace.hpp>
-#include <hyprland/src/desktop/view/Window.hpp>
+#include <hyprland/src/state/workspace/State.hpp>
+#include <hyprland/src/workspace/HLWorkspace.hpp>
+#include <hyprland/src/desktop/view/window/Window.hpp>
+#include <hyprland/src/desktop/view/window/WindowMetadata.hpp>
 #include <hyprland/src/layout/algorithm/Algorithm.hpp>
 #include <hyprland/src/layout/algorithm/tiled/dwindle/DwindleAlgorithm.hpp>
 #include <hyprland/src/layout/target/Target.hpp>
@@ -45,21 +46,25 @@ struct LiveTree {
             SessionTree::require(target && target->type() == Layout::TARGET_TYPE_WINDOW && !target->floating()
                                     && target->workspace() == workspace, "Groups/foreign targets are not supported");
             const auto window = target->window();
-            SessionTree::require(window && leaves.emplace(std::to_string(window->m_stableID), node).second,
+            SessionTree::require(window && leaves.emplace(std::to_string(window->metadata().stableID()), node).second,
                                 "Duplicate or missing live window");
         }
     }
 
     explicit LiveTree(lua_State* L) {
-        SessionTree::require(lua_isinteger(L, 1), "Expected workspace ID");
-        workspace = State::workspaceState()->query().id(lua_tointeger(L, 1)).run();
-        SessionTree::require(workspace && !workspace->m_isSpecialWorkspace && workspace->m_space,
+        SessionTree::require(lua_type(L, 1) == LUA_TSTRING, "Expected workspace address");
+        size_t length = 0;
+        const char* address = lua_tolstring(L, 1, &length);
+        SessionTree::require(length > 0 && length <= 4096 && std::string_view(address, length).find('\0') == std::string_view::npos,
+                            "Invalid workspace address");
+        workspace = State::Workspace::state()->query().address(std::string_view(address, length)).run();
+        SessionTree::require(workspace && workspace->type() != Workspace::eWorkspaceType::SPECIAL && workspace->space(),
                             "Workspace is unavailable or special");
-        const auto algo = workspace->m_space->algorithm();
+        const auto algo = workspace->space()->algorithm();
         algorithm = algo ? dynamic_cast<Layout::Tiled::CDwindleAlgorithm*>(algo->tiledAlgo().get()) : nullptr;
         SessionTree::require(algorithm != nullptr, "Only dwindle is supported");
         size_t tiled = 0;
-        for (const auto& weak : workspace->m_space->targets()) {
+        for (const auto& weak : workspace->space()->targets()) {
             const auto target = weak.lock();
             if (!target || target->floating()) continue;
             SessionTree::require(target->type() == Layout::TARGET_TYPE_WINDOW, "Grouped layouts are not supported");
@@ -78,7 +83,7 @@ struct LiveTree {
 };
 
 std::string serialize(const Pointer& node) {
-    if (!node->isNode) return "L" + std::to_string(node->pTarget->window()->m_stableID);
+    if (!node->isNode) return "L" + std::to_string(node->pTarget->window()->metadata().stableID());
     return std::format("{}{:.9g} {} {}", node->splitTop ? 'V' : 'H', node->splitRatio,
                        serialize(node->children[0].lock()), serialize(node->children[1].lock()));
 }

@@ -33,6 +33,17 @@ even if the version is unchanged. Normal pacman compatibility hooks still run.
 Build work directories are cleaned on success; the package archive is retained.
 Extra makepkg arguments are not accepted. It does not reload the live plugin.
 
+Hyprland 0.57.0 or newer is required: the controller uses coroutine-safe
+`hl.dispatch` rather than handing dispatcher actions back to its timer.
+Lua hexadecimal window IDs are normalized to the existing decimal native IDs;
+named workspaces retain `name:` selectors, without changing the snapshot format.
+Build and run against Hyprland 0.57.0 or newer only. On an older installation,
+use `./update-native.sh` or rerun `sudo ./setup.sh <username> [profile]`: the
+coordinated path builds against the pending upgrade in an isolated snapshot,
+then installs the system upgrade and native packages together. Component-only
+`./rebuild-plugin.sh` still requires matching installed dependencies.
+Do not bypass the upgrade gate or load an artifact built against another ABI.
+
 Plugin builds and the plugin compatibility check are compile-only: no tests or
 compositor harness are run. Rebuild/reinstall the packages, then **reboot**;
 a configuration reload cannot replace the already loaded binary.

@@ -1,11 +1,11 @@
 # Local package: source checksums are not a substitute for reviewing this checkout.
 pkgname=hyprcachy-window-session
 pkgver=0.11.0
-pkgrel=7
+pkgrel=9
 pkgdesc='Native dwindle session persistence with pre-transaction compilation checks'
 arch=('x86_64')
 license=() # The repository has not declared a license.
-depends=('hyprland' 'gcc-libs' 'gcc' 'make' 'pkgconf' 'uwsm' 'libnotify' 'coreutils>=9.5'
+depends=('hyprland>=0.57.0' 'gcc-libs' 'gcc' 'make' 'pkgconf' 'uwsm' 'libnotify' 'coreutils>=9.5'
          'pacman-contrib' 'wayland' 'hyprcachy-upgrade-guard>=0.2.0')
 options=('!lto' '!debug')
 source=('plugin.cpp' 'tree.hpp' 'filesystem.hpp' 'file-worker.hpp' 'window-state.hpp' 'Makefile'

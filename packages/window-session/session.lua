@@ -72,8 +72,21 @@ local function valid_identity(value)
 	local session, name = value:match("^([0-9a-f]+)/([0-9a-f]*)$")
 	return session ~= nil and #session == 64 and #name == 64
 end
+-- Hyprland 0.57 exposes stable IDs as hex strings; native/session trees stay decimal.
+local function stable_id(window)
+	local id = window.stable_id
+	assert(type(id) == "string" and #id > 0 and #id <= 16 and id:match("^[0-9a-fA-F]+$"), "Invalid stable window ID")
+	return string.format("%u", tonumber(id, 16))
+end
+local function workspace_name(workspace)
+	return workspace.id and tostring(workspace.id)
+		or "name:" .. assert(workspace.addressable_name, "Missing workspace address")
+end
+M.stable_id = stable_id
+M.workspace_name = workspace_name
+
 local function identity(window)
-	local current, restored, managed = hl.plugin.window_session.identity(tostring(window.stable_id))
+	local current, restored, managed = hl.plugin.window_session.identity(stable_id(window))
 	assert(type(managed) == "boolean", restored or "Cannot read protocol window identity")
 	assert(current == nil or valid_identity(current), "Invalid live protocol identity")
 	assert(restored == nil or valid_identity(restored), "Invalid live restore identity")
@@ -126,7 +139,7 @@ function M.snapshot(windows, ignored)
 				identity = current,
 				class = class(window),
 				title = fingerprint(window),
-				workspace = window.workspace.config_name,
+				workspace = workspace_name(window.workspace),
 				monitor = window.monitor.name,
 				floating = window.floating,
 				pinned = window.pinned or window.pin_fullscreened,
@@ -137,8 +150,8 @@ function M.snapshot(windows, ignored)
 				fullscreen = window.fullscreen,
 				client = window.fullscreen_client,
 			}
-			ids[#ids + 1] = tostring(window.stable_id)
-			slots[tostring(window.stable_id)] = tostring(#records)
+			ids[#ids + 1] = stable_id(window)
+			slots[stable_id(window)] = tostring(#records)
 		end
 	end
 	table.sort(ids)
@@ -201,11 +214,11 @@ function M.fullscreen_tree(origin)
 	if not workspace or #hl.get_windows({ workspace = workspace, mapped = true, floating = false }) == 0 then
 		return ""
 	end
-	return hl.plugin.window_session.capture(workspace.id)
+	return hl.plugin.window_session.capture(workspace.addressable_name)
 end
 function M.capture_fullscreen(records, slots, trees, windows)
 	local saved, live = {}, {}
-	for _, window in ipairs(windows) do live[tostring(window.stable_id)] = true end
+	for _, window in ipairs(windows) do live[stable_id(window)] = true end
 	for origin, layout in pairs(M.fullscreen_layouts) do
 		if layout.tree and M.fullscreen_tree(origin) ~= layout.expected then layout.tree = nil end
 		if layout.tree then
@@ -242,10 +255,10 @@ function M.restore_fullscreen(saved, bindings, live)
 				or window.pinned or window.pin_fullscreened or not window.workspace or window.workspace.special then
 				complete = false
 			elseif layout.away[slot] then
-				if window.workspace.config_name == origin or (window.fullscreen & 2) == 0
+				if workspace_name(window.workspace) == origin or (window.fullscreen & 2) == 0
 					or not return_tag(window.tags, origin) then complete = false end
 				away[id] = true
-			elseif window.workspace.config_name ~= origin then
+			elseif workspace_name(window.workspace) ~= origin then
 				complete = false
 			end
 		end
@@ -267,9 +280,9 @@ function M.capture(ignored, launch, desktops)
 	local trees, seen, commands = {}, {}, {}
 	M.capture_errors = {}
 	for _, window in ipairs(windows) do
-		local slot, app = slots[tostring(window.stable_id)], class(window)
+		local slot, app = slots[stable_id(window)], class(window)
 		if slot then
-			local state, err = hl.plugin.window_session.capture_state(tostring(window.stable_id))
+			local state, err = hl.plugin.window_session.capture_state(stable_id(window))
 			if state then
 				local r = records[tonumber(slot)]
 				r.state, r.ext = state.data, state
@@ -281,12 +294,12 @@ function M.capture(ignored, launch, desktops)
 			end
 		end
 		if slot and launch[app] == nil and not desktops[app:lower()] then
-			commands[#commands + 1] = { slot = slot, pid = window.pid, id = tostring(window.stable_id), app = app }
+			commands[#commands + 1] = { slot = slot, pid = window.pid, id = stable_id(window), app = app }
 		end
 		local ws = window.workspace
-		if eligible(window, ignored) and not window.floating and not seen[ws.config_name] then
-			seen[ws.config_name] = true
-			local tree, err = hl.plugin.window_session.capture(ws.id)
+		if eligible(window, ignored) and not window.floating and not seen[workspace_name(ws)] then
+			seen[workspace_name(ws)] = true
+			local tree, err = hl.plugin.window_session.capture(ws.addressable_name)
 			if tree then
 				local complete = true
 				tree = tree:gsub("L(%d+)", function(id)
@@ -297,13 +310,13 @@ function M.capture(ignored, launch, desktops)
 					return "L" .. slots[id]
 				end)
 				if complete then
-					trees[ws.config_name] = tree
+					trees[workspace_name(ws)] = tree
 				else
 					err = "Tree includes ignored/hidden windows"
 				end
 			end
 			if err then
-				M.capture_errors[#M.capture_errors + 1] = ws.config_name .. ": " .. err
+				M.capture_errors[#M.capture_errors + 1] = workspace_name(ws) .. ": " .. err
 			end
 		end
 	end
@@ -312,7 +325,7 @@ function M.capture(ignored, launch, desktops)
 		-- Capture live layout atomically before yielding; the worker sees only copied PID requests.
 		local results = file_task("commands", commands)
 		local live = {}
-		for _, window in ipairs(hl.get_windows()) do live[tostring(window.stable_id)] = window.pid end
+		for _, window in ipairs(hl.get_windows()) do live[stable_id(window)] = window.pid end
 		for i, request in ipairs(commands) do
 			assert(live[request.id] == request.pid, "Window closed during command capture; snapshot not saved")
 			records[tonumber(request.slot)].command = results[i].command
@@ -507,7 +520,7 @@ function M.pair(records, windows, used, fallback, in_place)
 			if not matched[i] then
 				for _, window in ipairs(windows) do
 					if
-						not used[tostring(window.stable_id)]
+						not used[stable_id(window)]
 						and ((pass == 1 and record.identity
 								and (identities[window].key == record.identity or identities[window].current == record.identity))
 							or (pass > 1 and not record.identity and not identities[window].managed
@@ -515,7 +528,7 @@ function M.pair(records, windows, used, fallback, in_place)
 								and (pass == 3 or fingerprint(window) == record.title)))
 					then
 						pairs[#pairs + 1] = { record, window }
-						used[tostring(window.stable_id)], matched[i] = true, true
+						used[stable_id(window)], matched[i] = true, true
 						break
 					end
 				end
@@ -531,16 +544,14 @@ function M.pair(records, windows, used, fallback, in_place)
 	return pairs, remaining
 end
 local function dispatch(action)
-	-- Dispatcher objects require hl.dispatch on the main Lua state, not this coroutine.
-	local ok, result = coroutine.yield("dispatch", action)
-	assert(ok, result)
+	local result = hl.dispatch(action)
 	assert(result and result.ok, result and result.error or "Hyprland refused restoration")
 end
 function M.place(r, window)
 	local monitor = hl.get_monitor(r.monitor) or hl.get_active_monitor() or hl.get_monitors()[1]
 	assert(monitor, "No monitor available")
 	local dsp = hl.dsp
-	assert(hl.plugin.window_session.apply_state(tostring(window.stable_id), r.state, true))
+	assert(hl.plugin.window_session.apply_state(stable_id(window), r.state, true))
 	if window.fullscreen ~= 0 or window.fullscreen_client ~= 0 then
 		dispatch(dsp.window.fullscreen_state({ window = window, internal = 0, client = 0, action = "set" }))
 	end
@@ -566,7 +577,7 @@ function M.place(r, window)
 			relative = false,
 		}))
 	end
-	assert(hl.plugin.window_session.apply_state(tostring(window.stable_id), r.state, false))
+	assert(hl.plugin.window_session.apply_state(stable_id(window), r.state, false))
 	if r.pinned then
 		dispatch(dsp.window.pin({ window = window, action = "enable" }))
 	end
@@ -755,14 +766,11 @@ function M.configure(options)
 		else
 			result = table.pack(coroutine.resume(M.task))
 		end
-		while result[1] and result[2] == "dispatch" do
-			result = table.pack(coroutine.resume(M.task, pcall(hl.dispatch, result[3])))
-		end
 		assert(result[1], result[2])
 		if coroutine.status(M.task) == "dead" then M.task, M.operation = nil, nil
 		else M.waiting = assert(result[2], "Session coroutine yielded without a file task") end
 	end
-	-- Resume completed file work and dispatch requested actions; no clock-budget retries or blocking waits.
+	-- Resume completed file work; dispatch runs inside the coroutine on Hyprland 0.57+.
 	-- Register callbacks on Hyprland's main Lua state, never from a coroutine.
 	M.timer = hl.timer(function()
 		local ok, message = pcall(advance)
@@ -914,7 +922,7 @@ function M.start(options)
 		local closing, actions = {}, {}
 		for _, window in ipairs(windows) do
 			if eligible(window, ignored) then
-				closing[tostring(window.stable_id)] = true
+				closing[stable_id(window)] = true
 				actions[#actions + 1] = hl.dsp.window.close({ window = window })
 			end
 		end
@@ -955,7 +963,7 @@ function M.start(options)
 		if c.closing then
 			local remaining = 0
 			for _, window in ipairs(hl.get_windows()) do
-				if c.closing[tostring(window.stable_id)] then
+				if c.closing[stable_id(window)] then
 					remaining = remaining + 1
 				end
 			end
@@ -974,7 +982,7 @@ function M.start(options)
 		if not c.finished and (#c.pending > 0 or next(c.matches)) and c.seconds <= timing.restore_timeout then
 			local windows, live = {}, {}
 			for _, window in ipairs(hl.get_windows()) do
-				live[tostring(window.stable_id)] = true
+				live[stable_id(window)] = true
 				if eligible(window, ignored) then
 					windows[#windows + 1] = window
 				end
@@ -991,7 +999,7 @@ function M.start(options)
 			for _, pair in ipairs(pairs) do
 				local ok, err = pcall(M.place, pair[1], pair[2])
 				if ok then
-					c.matches[pair[1].slot] = { id = tostring(pair[2].stable_id), record = pair[1] }
+					c.matches[pair[1].slot] = { id = stable_id(pair[2]), record = pair[1] }
 					-- An observed app is already starting; do not launch another copy during a window gap.
 					c.attempted[pair[1].class] = true
 				end
@@ -1028,7 +1036,7 @@ function M.start(options)
 			-- Re-resolve windows: a matched window may have closed during startup.
 			local live, bindings = {}, {}
 			for _, window in ipairs(hl.get_windows()) do
-				live[tostring(window.stable_id)] = window
+				live[stable_id(window)] = window
 			end
 			for slot, match in pairs(c.matches) do
 				if live[match.id] then
@@ -1040,7 +1048,7 @@ function M.start(options)
 			for name, tree in pairs(trees) do
 				local ws = hl.get_workspace(name)
 				if ws then
-					local restored, err = hl.plugin.window_session.restore(ws.id, tree, bindings)
+					local restored, err = hl.plugin.window_session.restore(ws.addressable_name, tree, bindings)
 					if not restored then
 						issue("layout failed: workspace " .. name .. ": " .. tostring(err))
 						print("Window session: tree not restored: " .. tostring(err))
@@ -1095,11 +1103,14 @@ function M.start(options)
 				for name, records in pairs(groups) do
 					local windows = {}
 					for _, window in pairs(live) do
-						if eligible(window, ignored) and window.workspace.config_name == name then windows[#windows + 1] = window end
+						if eligible(window, ignored) and workspace_name(window.workspace) == name then windows[#windows + 1] = window end
 					end
-					table.sort(windows, function(a, b) return a.stable_id < b.stable_id end)
+					table.sort(windows, function(a, b)
+						local first, second = stable_id(a), stable_id(b)
+						return #first == #second and first < second or #first < #second
+					end)
 					local matched = M.pair(records, windows, {}, true, true)
-					for _, pair in ipairs(matched) do bindings[pair[1].slot] = tostring(pair[2].stable_id) end
+					for _, pair in ipairs(matched) do bindings[pair[1].slot] = stable_id(pair[2]) end
 				end
 			end
 			for _, origin in ipairs(M.restore_fullscreen(c.fullscreen, bindings, live)) do

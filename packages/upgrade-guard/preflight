@@ -168,10 +168,10 @@ btrfs subvolume snapshot / "$stage/root"
 # Remove only the snapshot's copy. The live lock belongs to the waiting pacman process.
 rm -f "$stage/root/var/lib/pacman/db.lck"
 echo 'Building guarded native artifacts against the pending packages in a private snapshot...'
-timeout --signal=TERM --kill-after=15s 600s systemd-nspawn --quiet --register=no --private-network --settings=no --link-journal=no \
+timeout --signal=TERM --kill-after=15s 600s systemd-nspawn --quiet --console=pipe --register=no --private-network --settings=no --link-journal=no \
     --directory="$stage/root" --hostname=hyprcachy-preflight --drop-capability=CAP_SYS_ADMIN,CAP_MKNOD \
     --bind-ro="$stage/packages:/packages" --bind="$stage/check:/check" \
-    /usr/bin/env -i PATH=/usr/bin LC_ALL=C HOME=/root /bin/bash /check/candidate-check
+    /usr/bin/env -i PATH=/usr/bin LC_ALL=C HOME=/root /bin/bash /check/candidate-check < /dev/null
 [[ -f "$stage/check/success" ]] || { gate_error 'Candidate compilation did not complete.'; exit 1; }
 verify_controls "$stage"
 artifacts=()

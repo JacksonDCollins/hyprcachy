@@ -1,7 +1,7 @@
 # Companion executable; the distribution continues to own /usr/bin/tmux.
 pkgname=hyprcachy-tmux
 pkgver=0.3.0
-pkgrel=4
+pkgrel=5
 pkgdesc='Split top/bottom tmux status with guarded automatic rebuilds'
 arch=('x86_64')
 license=('BSD')
@@ -13,9 +13,13 @@ source=('split-status.patch' 'build' 'hyprcachy-tmux' 'README.md'
 sha256sums=('SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP')
 
 build() {
-    local archive=()
-    [[ -z ${HYPRCACHY_TMUX_PACKAGE:-} ]] || archive=("$HYPRCACHY_TMUX_PACKAGE")
-    bash -p ./tmux-source "$srcdir/upstream" "${archive[@]}"
+    if [[ -n ${HYPRCACHY_TMUX_INPUT:-} ]]; then
+        cp -R -- "$HYPRCACHY_TMUX_INPUT" "$srcdir/upstream"
+    else
+        local archive=()
+        [[ -z ${HYPRCACHY_TMUX_PACKAGE:-} ]] || archive=("$HYPRCACHY_TMUX_PACKAGE")
+        bash -p ./tmux-source "$srcdir/upstream" "${archive[@]}"
+    fi
     bash ./build "$srcdir/upstream" "$srcdir/output"
 }
 
@@ -24,7 +28,9 @@ package() {
     install -Dm755 tmux-source "$pkgdir/usr/lib/hyprcachy/upgrade.d/$pkgname/tmux-source"
     install -Dm755 local-source "$pkgdir/usr/lib/hyprcachy/upgrade.d/$pkgname/local-source"
     # Record the checkout, not the invoking user's HOME inside a root pacman hook.
-    printf '%s\n' "$(realpath -- "$startdir")" > "$pkgdir/usr/lib/hyprcachy/upgrade.d/$pkgname/source-directory"
+    local source_directory=${HYPRCACHY_TMUX_SOURCE_DIRECTORY:-$(realpath -- "$startdir")}
+    [[ $source_directory == /* && $source_directory != *$'\n'* && $source_directory != *\\* ]]
+    printf '%s\n' "$source_directory" > "$pkgdir/usr/lib/hyprcachy/upgrade.d/$pkgname/source-directory"
     if [[ -n ${HYPRCACHY_UPDATE_PLAN:-} ]]; then
         install -m644 "$HYPRCACHY_UPDATE_PLAN" "$pkgdir/usr/lib/hyprcachy/upgrade.d/$pkgname/update-plan"
     else

@@ -5,7 +5,12 @@
 #include <locale>
 #include <sstream>
 #include "tree.hpp"
-#include <hyprland/src/desktop/view/Window.hpp>
+#include <hyprland/src/desktop/view/window/Window.hpp>
+#include <hyprland/src/desktop/view/window/WindowMetadata.hpp>
+#include <hyprland/src/desktop/view/window/WindowGroupMembership.hpp>
+#include <hyprland/src/desktop/view/window/WindowFullscreenPolicy.hpp>
+#include <hyprland/src/desktop/view/window/WindowPresentation.hpp>
+#include <hyprland/src/workspace/HLWorkspace.hpp>
 #include <hyprland/src/layout/target/Target.hpp>
 #include <hyprland/src/desktop/state/WindowState.hpp>
 #include <hyprland/src/desktop/state/GlobalWindowController.hpp>
@@ -172,17 +177,18 @@ inline CHyprSignalListener frameListener, closeListener;
 inline void observe() {
     // ponytail: last-observed geometry; use a public fullscreen-cache getter if Hyprland adds one.
     for (const auto& w : Desktop::windowState()->windows()) {
-        if (!w->m_isMapped || w->isHidden() || !w->m_isFloating || w->m_group || !w->m_workspace || !w->m_workspace->m_space
+        if (!w->mapped() || w->isHidden() || !w->isFloating() || w->grouping().group()
+            || !w->m_workspace || !w->m_workspace->space()
             || !w->m_monitor || Fullscreen::controller()->isFullscreen(w)) continue;
         const auto box = w->geometricBox(Desktop::View::IGeometric::GEOMETRIC_GOAL);
         const auto area = w->m_monitor->m_reservedArea.apply(w->m_monitor->logicalBox());
         if (box.w > 0 && box.h > 0 && area.w > 0 && area.h > 0)
-            normalGeometry[w->m_stableID] = CBox{(box.x - area.x) / area.w, (box.y - area.y) / area.h, box.w / area.w, box.h / area.h};
+            normalGeometry[w->metadata().stableID()] = CBox{(box.x - area.x) / area.w, (box.y - area.y) / area.h, box.w / area.w, box.h / area.h};
     }
 }
 inline void start() {
     frameListener = Event::bus()->m_events.render.pre.listen([](PHLMONITOR) { observe(); });
-    closeListener = Event::bus()->m_events.window.close.listen([](PHLWINDOW w) { normalGeometry.erase(w->m_stableID); });
+    closeListener = Event::bus()->m_events.window.close.listen([](PHLWINDOW w) { normalGeometry.erase(w->metadata().stableID()); });
     observe();
 }
 inline void stop() { frameListener.reset(); closeListener.reset(); normalGeometry.clear(); }
@@ -192,7 +198,7 @@ inline PHLWINDOW window(lua_State* L, int index) {
     const char* id = lua_tolstring(L, index, &n);
     require(n > 0 && n <= 20, "Invalid window ID");
     for (const auto& w : Desktop::windowState()->windows())
-        if (w->m_isMapped && !w->m_group && std::to_string(w->m_stableID) == std::string(id, n)) return w;
+        if (w->mapped() && !w->grouping().group() && std::to_string(w->metadata().stableID()) == std::string(id, n)) return w;
     throw std::runtime_error("Window is unavailable or grouped");
 }
 inline std::string data(lua_State* L, int index) {
@@ -230,10 +236,10 @@ inline int capture(lua_State* L) {
         observe();
         State s;
         s.pseudo = target->isPseudo(); s.pseudoSize = target->pseudoSize(); s.floatingSize = target->lastFloatingSize();
-        s.above = w->m_allowedOverFullscreen;
+        s.above = w->fullscreenPolicy().allowedOverFullscreen();
         const auto& windows = Desktop::windowState()->windows();
         s.z = std::ranges::find(windows, w) - windows.begin();
-        if (normalGeometry.contains(w->m_stableID)) s.normal = normalGeometry.at(w->m_stableID);
+        if (normalGeometry.contains(w->metadata().stableID())) s.normal = normalGeometry.at(w->metadata().stableID());
         const auto& rules = w->m_ruleApplicator;
         for (const auto& tag : rules->m_tagKeeper.getTags()) if (!tag.ends_with('*')) s.tags.push_back(tag);
 #define CAPTURE(type, field) if (rules->field().hasValue() && rules->field().getPriority() == manual) s.props[#field] = encodeValue(rules->field().value());
@@ -269,7 +275,7 @@ inline int apply(lua_State* L) {
         } else {
             target->setPseudoSize(s.pseudoSize); target->setPseudo(s.pseudo);
             target->rememberFloatingSize(s.floatingSize);
-            if (s.normal) normalGeometry[w->m_stableID] = *s.normal;
+            if (s.normal) normalGeometry[w->metadata().stableID()] = *s.normal;
             target->recalc();
         }
         lua_pushboolean(L, true); return 1;
@@ -279,11 +285,11 @@ inline int raise(lua_State* L) {
     try {
         const auto w = window(L, 1);
         const auto s = decode(data(L, 2));
-        require(w->m_isFloating, "Stack restoration requires a floating window");
+        require(w->isFloating(), "Stack restoration requires a floating window");
         Desktop::windowState()->raise(w);
-        w->m_allowedOverFullscreen = s.above;
+        w->fullscreenPolicy().setAllowedOverFullscreen(s.above);
         w->updateFullscreenInputState();
-        *w->alpha(Desktop::View::WINDOW_ALPHA_FULLSCREEN) = w->isBlockedByFullscreen() ? 0.F : 1.F;
+        *w->presentation().alpha(Desktop::View::WINDOW_ALPHA_FULLSCREEN) = w->isBlockedByFullscreen() ? 0.F : 1.F;
         lua_pushboolean(L, true); return 1;
     } catch (const std::exception& e) { return failure(L, e.what()); }
 }

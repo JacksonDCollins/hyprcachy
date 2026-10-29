@@ -105,8 +105,11 @@ fix connectivity and retry the original command without disabling hooks.
 Component-only rebuilds need the exact signed installed tmux archive in pacman's
 cache, or the same version still available from the configured mirror. They do not
 upgrade distribution packages; use `./update-native.sh` when the current patch needs
-an incoming tmux version. Its driver supplies the exact target through
-`HYPRCACHY_TMUX_PACKAGE`, preserving the same signature and recipe verification.
+an incoming tmux version. The coordinated driver downloads and verifies the exact
+target's sources first, then supplies them through `HYPRCACHY_TMUX_INPUT` to the
+offline snapshot build. `HYPRCACHY_TMUX_SOURCE_DIRECTORY` preserves the real host
+checkout location in the package, not a temporary container path. Component-only
+builds retain the signed-archive download path.
 Repository replacement transitions cannot be translated faithfully to a local `-U`
 transaction, so the coordinated script rejects them; ordinary `pacman -Syu` retains
 its normal replacement handling. Install this updated companion/adapter once to
